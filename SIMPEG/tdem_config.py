@@ -64,6 +64,8 @@ class TDEMConfig:
         self.rx_x = self._ensure_array(self._config_data.get('rx_x', 0.0))
         self.rx_y = self._ensure_array(self._config_data.get('rx_y', 0.0))
         self.rx_z = self._ensure_array(self._config_data.get('rx_z', 0.3))
+        self.rx_radius = self._config_data.get('rx_radius', 0.4)
+        self.rx_n_turns = self._config_data.get('rx_n_turns', 30)
         
         # Target configuration
         self.target_x = self._config_data.get('target_x', 0.0)

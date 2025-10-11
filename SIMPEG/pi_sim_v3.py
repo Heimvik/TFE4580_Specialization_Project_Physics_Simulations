@@ -297,6 +297,8 @@ ax2.set_title("TDEM Decay Curve (Log-Log Scale)")
 ax2.grid(True, alpha=0.3, which='both')
 ax2.set_xlim((time_channels.min() * 1e6, time_channels.max() * 1e6))
 
+
+
 plt.tight_layout()
 
 # Print some statistics
