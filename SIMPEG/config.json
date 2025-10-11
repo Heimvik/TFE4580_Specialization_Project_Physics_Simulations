@@ -10,11 +10,11 @@
     "rx_num": 1,
     "rx_x": 0.0,
     "rx_y": 0.0,
-    "rx_z": 0.0,
+    "rx_z": 0.13,
     
     "target_x": 0.0,
     "target_y": 0.0,
-    "target_z": 0.15,
+    "target_z": 0.0,
     "target_radius": 0.0325,
     "target_height": 0.12,
     

@@ -61,28 +61,26 @@ waveform = tdem.sources.StepOffWaveform(off_time=cfg.waveform_off_time)
 
 # Observation times for response (time channels)
 # Use logarithmic spacing to avoid t=0 and capture decay properly
-time_channels = np.linspace(0, 500e-6,100)  # 10 μs to ~500 μs
 
-# Defining transmitter location (single ground-based position)
+time_channels = np.linspace(0, 1024e-6,1000)
+
+# Transmitter location
 xtx, ytx, ztx = np.meshgrid([0], [0], [cfg.tx_z])
 source_locations = np.c_[mkvc(xtx), mkvc(ytx), mkvc(ztx)]
 ntx = np.size(xtx)
 
-# Define receiver location (coincident with transmitter)
+# Receiver location
 xrx, yrx, zrx = np.meshgrid([0], [0], [cfg.rx_z])
 receiver_locations = np.c_[mkvc(xrx), mkvc(yrx), mkvc(zrx)]
 
-source_list = []  # Create empty list to store sources
+source_list = []
 
-# Each unique location defines a new transmitter
 for ii in range(ntx):
-    # Define receivers at each location
     dbzdt_receiver = tdem.receivers.PointMagneticFluxTimeDerivative(
         receiver_locations[ii, :], time_channels, "z"
     )
     receivers_list = [dbzdt_receiver]
 
-    # Define the transmitter properties
     source_list.append(
         tdem.sources.CircularLoop(
             receivers_list,
@@ -134,88 +132,95 @@ print(f"  Smallest cell (vertical): {mesh.h[2].min():.4f} m\n")
 #   - Aluminum can (cylindrical target at target depth): cfg.target_conductivity
 #
 
-# Get conductivity values from configuration
-air_conductivity = cfg.air_conductivity
-grass_conductivity = cfg.grass_conductivity
-soil_conductivity = cfg.soil_conductivity
-aluminum_conductivity = cfg.target_conductivity
-
-# Find cells that are active in the forward modeling (cells below surface)
-ind_active = mesh.cell_centers[:, 2] < cfg.grass_z_max
+active_area_z = cfg.target_z+cfg.target_height/2
+ind_active = mesh.cell_centers[:, 2] < active_area_z  # Only cells BELOW surface (negative z)
 
 # Define mapping from model to active cells
-model_map = maps.InjectActiveCells(mesh, ind_active, air_conductivity)
+model_map_no_target = maps.InjectActiveCells(mesh, ind_active, cfg.air_conductivity)
+model_map_target = maps.InjectActiveCells(mesh, ind_active, cfg.air_conductivity)
 
 # Get cell center coordinates
 r = mesh.cell_centers[ind_active, 0]  # radial distance
 z = mesh.cell_centers[ind_active, 2]  # vertical position
 
-# Start with soil as background
-model = soil_conductivity * np.ones(ind_active.sum())
+base_model = cfg.air_conductivity * np.ones(ind_active.sum())
 
-# Define grass layer (from surface down to grass_z_min)
-# Since this is cylindrical with radial symmetry, grass extends across all radii
-# But we limit it to the radial extent matching the grass x-boundaries
-grass_radial_extent = max(abs(cfg.grass_x_min), abs(cfg.grass_x_max))
-ind_grass = (
-    (r <= grass_radial_extent) &
-    (z >= cfg.grass_z_min) & 
-    (z < 0)
+ind_soil = (
+    (z < cfg.target_z - cfg.target_height/2)
 )
-model[ind_grass] = grass_conductivity
+base_model[ind_soil] = cfg.soil_conductivity
 
-# Define aluminum can (cylindrical target)
-# The can is centered at (r=0, z=target_z) with radius target_radius and height target_height
-target_z = cfg.target_z
-target_radius = cfg.target_radius
-target_height = cfg.target_height
 
+model_target = base_model.copy()
+model_no_target = base_model.copy()
 ind_can = (
-    (r <= target_radius) &
-    (z < target_z + target_height/2) &
-    (z > target_z - target_height/2)
+    (r <= cfg.target_radius) &
+    (z < cfg.target_z + cfg.target_height/2) &
+    (z > cfg.target_z - cfg.target_height/2)
 )
-model[ind_can] = aluminum_conductivity
+model_target[ind_can] = cfg.aluminum_conductivity
 
 print(f"Model Statistics:")
 print(f"  Total active cells: {ind_active.sum()}")
-print(f"  Grass cells: {ind_grass.sum()}")
 print(f"  Aluminum can cells: {ind_can.sum()}")
-print(f"  Soil cells: {(~ind_grass & ~ind_can).sum()}\n")
+print(f"  Soil cells: {ind_soil.sum()}")
 
 # Plot Conductivity Model
 mpl.rcParams.update({"font.size": 12})
-fig = plt.figure(figsize=(7, 6))
+fig, axes = plt.subplots(1, 2, figsize=(14, 6))
 
 plotting_map = maps.InjectActiveCells(mesh, ind_active, np.nan)
-log_model = np.log10(model)
+log_model_target = np.log10(model_target)
+log_model_no_target = np.log10(model_no_target)
 
-ax1 = fig.add_axes([0.15, 0.1, 0.65, 0.85])
+# Plot for target model
+ax1 = axes[0]
 mesh.plot_image(
-    plotting_map * log_model,
+    plotting_map * log_model_target,
     ax=ax1,
     grid=True,
-    clim=(np.log10(grass_conductivity), np.log10(aluminum_conductivity)),
+    clim=(np.log10(cfg.grass_conductivity), np.log10(cfg.aluminum_conductivity)),
 )
-ax1.set_title("Conductivity Model (Cylindrical)")
+ax1.set_title("Conductivity Model with Target (Cylindrical)")
 ax1.set_xlabel("Radial Distance [m]")
 ax1.set_ylabel("Elevation [m]")
 
 # Add annotations
 ax1.axhline(y=0, color='k', linestyle='--', linewidth=1, alpha=0.5, label='Surface')
 ax1.axhline(y=cfg.grass_z_min, color='g', linestyle='--', linewidth=1, alpha=0.5, label='Grass/Soil Interface')
-ax1.axhline(y=target_z, color='r', linestyle=':', linewidth=1, alpha=0.7, label='Target Center')
+ax1.axhline(y=cfg.target_z, color='r', linestyle=':', linewidth=1, alpha=0.7, label='Target Center')
 ax1.legend(loc='lower right', fontsize=10)
 
-ax2 = fig.add_axes([0.82, 0.1, 0.03, 0.85])
+# Plot for no target model
+ax2 = axes[1]
+mesh.plot_image(
+    plotting_map * log_model_no_target,
+    ax=ax2,
+    grid=True,
+    clim=(np.log10(cfg.grass_conductivity), np.log10(cfg.aluminum_conductivity)),
+)
+ax2.set_title("Conductivity Model without Target (Cylindrical)")
+ax2.set_xlabel("Radial Distance [m]")
+ax2.set_ylabel("Elevation [m]")
+
+# Add annotations
+ax2.axhline(y=0, color='k', linestyle='--', linewidth=1, alpha=0.5, label='Surface')
+ax2.axhline(y=cfg.grass_z_min, color='g', linestyle='--', linewidth=1, alpha=0.5, label='Grass/Soil Interface')
+ax2.legend(loc='lower right', fontsize=10)
+
+# Shared colorbar
+fig.subplots_adjust(right=0.85)
+cbar_ax = fig.add_axes([0.87, 0.1, 0.03, 0.8])
 norm = mpl.colors.Normalize(
-    vmin=np.log10(grass_conductivity), 
-    vmax=np.log10(aluminum_conductivity)
+    vmin=np.log10(cfg.grass_conductivity), 
+    vmax=np.log10(cfg.aluminum_conductivity)
 )
 cbar = mpl.colorbar.ColorbarBase(
-    ax2, norm=norm, orientation="vertical", format="$10^{%.1f}$"
+    cbar_ax, norm=norm, orientation="vertical", format="$10^{%.1f}$"
 )
 cbar.set_label("Conductivity [S/m]", rotation=270, labelpad=20, size=12)
+
+plt.tight_layout()
 
 ######################################################
 # Define the Time-Stepping
@@ -242,13 +247,16 @@ print(f"  Time margin: OK" if time_channels.max() < total_sim_time else "  WARNI
 # Simulation using the EB formulation for magnetic flux density.
 #
 
-simulation = tdem.simulation.Simulation3DMagneticFluxDensity(
-    mesh, survey=survey, sigmaMap=model_map, t0=cfg.simulation_t0
+simulation_no_target = tdem.simulation.Simulation3DMagneticFluxDensity(
+    mesh, survey=survey, sigmaMap=model_map_no_target, t0=cfg.simulation_t0
+)
+simulation_target = tdem.simulation.Simulation3DMagneticFluxDensity(
+    mesh, survey=survey, sigmaMap=model_map_target, t0=cfg.simulation_t0
 )
 
 # Set the time-stepping for the simulation
-simulation.time_steps = time_steps
-
+simulation_no_target.time_steps = time_steps
+simulation_target.time_steps = time_steps
 ###########################################################
 # Predict Data and Plot
 # ---------------------
@@ -258,18 +266,21 @@ simulation.time_steps = time_steps
 print("Running forward simulation...")
 # Data are organized by transmitter, then by receiver, then by observation time
 # dBdt data are in T/s
-dpred = simulation.dpred(model)
+dpred_no_target = simulation_no_target.dpred( m=model_no_target)
+dpred_target = simulation_target.dpred( m=model_target)
 print("Simulation complete!\n")
 
 # Plot the response
-dpred = np.reshape(dpred, (ntx, len(time_channels)))
+dpred_no_target= np.reshape(dpred_no_target, (ntx, len(time_channels)))
+dpred_target = np.reshape(dpred_target, (ntx, len(time_channels)))
 
 # Decay Curve
 fig = plt.figure(figsize=(10, 5))
 
 # Linear scale
 ax1 = fig.add_subplot(121)
-ax1.plot(time_channels * 1e6, -dpred[0, :], 'b', lw=2, marker='o', markersize=4)
+ax1.plot(time_channels * 1e6, -dpred_no_target[0, :], 'b', lw=2, marker='o', markersize=4)
+ax1.plot(time_channels * 1e6, -dpred_target[0, :], 'r', lw=2, marker='o', markersize=4)
 ax1.set_xlabel("Time [μs]")
 ax1.set_ylabel("-dBz/dt [T/s]")
 ax1.set_title("TDEM Decay Curve (Linear Scale)")
@@ -278,7 +289,8 @@ ax1.set_xlim((0, time_channels.max() * 1e6))
 
 # Log-log scale
 ax2 = fig.add_subplot(122)
-ax2.loglog(time_channels * 1e6, -dpred[0, :], 'b', lw=2, marker='o', markersize=4)
+ax2.loglog(time_channels * 1e6, -dpred_no_target[0, :], 'b', lw=2, marker='o', markersize=4)
+ax2.loglog(time_channels * 1e6, -dpred_target[0, :], 'r', lw=2, marker='o', markersize=4)
 ax2.set_xlabel("Time [μs]")
 ax2.set_ylabel("-dBz/dt [T/s]")
 ax2.set_title("TDEM Decay Curve (Log-Log Scale)")
@@ -289,9 +301,9 @@ plt.tight_layout()
 
 # Print some statistics
 print("Response Statistics:")
-print(f"  Max response: {-dpred[0, :].max():.3e} T/s at t={time_channels[np.argmax(-dpred[0, :])]*1e6:.1f} μs")
-print(f"  Min response: {-dpred[0, :].min():.3e} T/s at t={time_channels[np.argmin(-dpred[0, :])]*1e6:.1f} μs")
-print(f"  Response at 100 μs: {-dpred[0, np.argmin(np.abs(time_channels - 1e-4))]:.3e} T/s")
+print(f"  Max response: {-dpred_no_target[0, :].max():.3e} T/s at t={time_channels[np.argmax(-dpred_no_target[0, :])]*1e6:.1f} μs")
+print(f"  Min response: {-dpred_no_target[0, :].min():.3e} T/s at t={time_channels[np.argmin(-dpred_no_target[0, :])]*1e6:.1f} μs")
+print(f"  Response at 100 μs: {-dpred_no_target[0, np.argmin(np.abs(time_channels - 1e-4))]:.3e} T/s")
 
 plt.show()
 
