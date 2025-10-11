@@ -11,9 +11,7 @@ import matplotlib.pyplot as plt
 # Import the configuration class
 from tdem_config import TDEMConfig
 
-write_file = False
 
-# Load configuration
 cfg = TDEMConfig('config.json')
 
 class PiSimulator:
@@ -135,39 +133,26 @@ class PiSimulator:
         return times, decays
 
     def plot_tdem_response(self, times, decays):
-        # Decay Curve
         fig = plt.figure(figsize=(12, 5))
 
-        # Assume all times are the same, use the first one
         time = times[0] * 1e6  # Convert to μs
 
-        # Calculate colors and labels based on loop distance from target
-        # Decay 0 is red (no target), others are shades of blue (darker = closer to target)
         colors = []
         labels = []
         
-        # First decay: no target (red)
         colors.append('red')
         labels.append(f'No target (loop @ {float(self.loop_z_start):.2f}m)')
         
-        # Remaining decays: with target, varying loop heights
-        # Create gradient from dark blue (close) to light blue (far)
         num_with_target = len(decays) - 1
         if num_with_target > 0:
-            # Use a color gradient: from dark blue (0.2, 0.2, 0.8) to light blue (0.6, 0.7, 1.0)
             for i in range(num_with_target):
-                # Calculate loop height and distance from target
                 loop_z = self.loop_z_start + i * self.loop_z_increment
                 distance_from_target = abs(loop_z - float(self.cfg.target_z))
-                
-                # Color gradient: darker (closer) to lighter (farther)
-                # Normalize from 0 (closest) to 1 (farthest)
                 if num_with_target > 1:
                     norm_dist = i / (num_with_target - 1)
                 else:
                     norm_dist = 0.5
                 
-                # Dark blue to light blue gradient
                 r = 0.1 + norm_dist * 0.5   # 0.1 -> 0.6
                 g = 0.2 + norm_dist * 0.5   # 0.2 -> 0.7
                 b = 0.8 + norm_dist * 0.2   # 0.8 -> 1.0
@@ -175,7 +160,7 @@ class PiSimulator:
                 colors.append((r, g, b))
                 labels.append(f'With target (loop @ {loop_z:.2f}m, dist={distance_from_target:.2f}m)')
 
-        # Linear scale
+        # Linear
         ax1 = fig.add_subplot(121)
         for i, decay in enumerate(decays):
             ax1.plot(time, decay, marker='x', markersize=3, color=colors[i], 
@@ -186,7 +171,7 @@ class PiSimulator:
         ax1.grid(True, alpha=0.3)
         ax1.set_xlim((0, time.max()))
 
-        # Log-log scale
+        # Log-log
         ax2 = fig.add_subplot(122)
         for i, decay in enumerate(decays):
             ax2.loglog(time, decay, marker='x', markersize=3, color=colors[i], 
@@ -197,17 +182,17 @@ class PiSimulator:
         ax2.grid(True, alpha=0.3, which='both')
         ax2.set_xlim((time.min(), time.max()))
 
-        # Create a shared legend below the plots
+        # Shared legend
         handles, legend_labels = ax1.get_legend_handles_labels()
         fig.legend(handles, legend_labels, loc='lower center', ncol=min(3, len(decays)), 
                   bbox_to_anchor=(0.5, -0.05), frameon=True, fontsize=9)
         
         plt.tight_layout()
-        plt.subplots_adjust(bottom=0.15)  # Make room for legend
+        plt.subplots_adjust(bottom=0.15)
         plt.show()
 
 
-simulator = PiSimulator(cfg,loop_z_start=cfg.tx_z, loop_z_increment=0.05, num_increments = 3)
+simulator = PiSimulator(cfg,loop_z_start=cfg.tx_z, loop_z_increment=0.08, num_increments = 5)
 times, decays = simulator.run()
 simulator.plot_tdem_response(times, decays)
 

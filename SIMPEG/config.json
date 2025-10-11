@@ -2,7 +2,7 @@
     "tx_num": 1,
     "tx_x": 0.0,
     "tx_y": 0.0,
-    "tx_z": 0.4,
+    "tx_z": 0.2,
     "tx_current": 20.0,
     "tx_radius": 0.4,
     "tx_n_turns": 30,
@@ -10,7 +10,7 @@
     "rx_num": 1,
     "rx_x": 0.0,
     "rx_y": 0.0,
-    "rx_z": 0.4,
+    "rx_z": 0.2,
     "rx_radius": 0.4,
     "rx_n_turns": 30,
     
@@ -34,7 +34,7 @@
     "time_channel_end": 5e-4,
     "time_channel_step": 1e-6,
     
-    "time_steps": [[1e-6, 100], [1e-5, 400]],
+    "time_steps": [[1e-6, 1024]],
     
     "mesh_dh": 0.02,
     "mesh_dom_width": 2.0,
