@@ -198,7 +198,8 @@ class Model(BaseTDEMModel):
         feature = []
         material_cnt = 0
         # t = np.linspace(0, 0.1, t_split * 10)
-        t = np.array(10 ** np.linspace(-8, 1, t_split * 10))  # 采集10s内的数据
+        # t = np.array(10 ** np.linspace(-8, 1, t_split * 10))  # 采集10s内的数据
+        t = np.linspace(0, 0.1, t_split * 10) # Ported from log time to linear time
         t = np.hstack((0, t))
         sample_num = 0
         plot_flag = 0

@@ -19,10 +19,8 @@ import simpeg.electromagnetics.frequency_domain as fdem
 
 from scipy.constants import mu_0
 
-try:
-    from pymatsolver import Pardiso as Solver
-except ImportError:
-    from simpeg import SolverLU as Solver
+# Force use of SolverLU to avoid Pardiso dependency issues
+from simpeg import SolverLU as Solver
 
 
 class BaseFDEMModel(metaclass=ABCMeta):
@@ -138,8 +136,12 @@ class Model(BaseFDEMModel):
 
         '''Simulation'''
         simulation = fdem.simulation.Simulation3DMagneticFluxDensity(
-            mesh, survey=self.survey.survey, sigmaMap=sigma_map, muMap=mu_map, Solver=Solver
+            mesh, survey=self.survey.survey
         )
+        # Set maps after initialization using correct property names
+        simulation.sigmaMap = sigma_map
+        simulation.muMap = mu_map
+        simulation.solver = Solver
         '''Predict'''
 
         # Compute predicted data for your model.
@@ -237,13 +239,13 @@ class Model(BaseFDEMModel):
         """
 
         # Get the direction vector of the central axis of the cylinder
-        init_vector = np.mat([0, 0, 1]).T
+        init_vector = np.asmatrix([0, 0, 1]).T
         Rotation_mat = RotationMatrix(oritation[0], oritation[1], 0)
         rotated_vector = Rotation_mat * init_vector
 
         # Define the points
-        center = np.mat(center)
-        ccMesh = np.mat(ccMesh)
+        center = np.asmatrix(center)
+        ccMesh = np.asmatrix(ccMesh)
 
         # Calculate the all distances from the midpoint of the central axis of a
         # cylinder to the perpendicular foot that from each mesh to the central
@@ -254,7 +256,7 @@ class Model(BaseFDEMModel):
         # Calculate the distances from each mesh to the central axis of the
         # cylinder
         d_meshcc_to_axis = np.sqrt(np.square(ccMesh - center).sum(axis=1)
-                                   - np.mat(np.square(d_foot_to_center)).T)
+                                   - np.asmatrix(np.square(d_foot_to_center)).T)
         d_meshcc_to_axis = np.squeeze(np.array(d_meshcc_to_axis))
 
         ind1 = d_foot_to_center < height / 2
