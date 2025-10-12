@@ -1,3 +1,7 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+from simpeg import maps
 
 class PiPlotter:
     def __init__(self, plotting_info, plot_linear=False, plot_loglog=False, 
@@ -36,63 +40,141 @@ class PiPlotter:
         self.enable_top_view = plot_top_view
         self.enable_3d = plot_3d
         
-        # Data for TDEM plots
-        self.times = None
-        self.decays = None
+        # Data for TDEM plots - now supports multiple labeled datasets
+        self.datasets = []  # List of dicts with 'label', 'times', 'decays'
+        
+        # Color palette for different labels
+        self.color_palettes = {
+            'unconditioned': {'base': 'blue', 'name': 'Blue'},
+            'noise_free': {'base': 'green', 'name': 'Green'},
+            'noisy': {'base': 'orange', 'name': 'Orange'},
+            'filtered': {'base': 'purple', 'name': 'Purple'},
+            'amplified': {'base': 'cyan', 'name': 'Cyan'},
+            'default': {'base': 'gray', 'name': 'Gray'}
+        }
+
+    def update_times_data(self, times, decays, label='unconditioned', replace=True):
+        """
+        Update times and decays data for TDEM plotting.
+        
+        Parameters
+        ----------
+        times : array or list
+            Time array(s) for the data
+        decays : list of arrays
+            List of decay curves
+        label : str
+            Label for this dataset (e.g., 'unconditioned', 'noise_free', 'noisy')
+            Different labels will be plotted in different colors
+        replace : bool
+            If True, replace all existing data. If False, append to existing datasets.
+        """
+        if replace:
+            self.datasets = []
+        
+        # Store the dataset with its label
+        self.datasets.append({
+            'label': label,
+            'times': times,
+            'decays': decays
+        })
+
+    def _get_color_for_label(self, label):
+        """Get the base color name for a given label."""
+        if label in self.color_palettes:
+            return self.color_palettes[label]['base']
+        return self.color_palettes['default']['base']
     
-    def update_times_data(self, times, decays):
-        """Update times and decays data for TDEM plotting."""
-        self.times = times
-        self.decays = decays
+    def _generate_color_shade(self, base_color, norm_value):
+        """
+        Generate a shade of the base color based on normalized value (0 to 1).
+        Dark shade for norm_value=0, light shade for norm_value=1.
+        """
+        color_schemes = {
+            'blue': lambda n: (0.1 + n * 0.5, 0.2 + n * 0.5, 0.8 + n * 0.2),
+            'green': lambda n: (0.1 + n * 0.3, 0.6 + n * 0.3, 0.1 + n * 0.3),
+            'orange': lambda n: (0.9 + n * 0.1, 0.4 + n * 0.4, 0.1 + n * 0.2),
+            'purple': lambda n: (0.5 + n * 0.3, 0.1 + n * 0.3, 0.7 + n * 0.2),
+            'cyan': lambda n: (0.1 + n * 0.3, 0.7 + n * 0.2, 0.8 + n * 0.2),
+            'gray': lambda n: (0.3 + n * 0.5, 0.3 + n * 0.5, 0.3 + n * 0.5)
+        }
+        
+        if base_color in color_schemes:
+            return color_schemes[base_color](norm_value)
+        else:
+            return color_schemes['gray'](norm_value)
     
     def _get_colors_labels(self):
-        """Generate colors and labels for decay curves."""
+        """Generate colors and labels for all decay curves across all datasets."""
         colors = []
         labels = []
         
-        colors.append('red')
-        labels.append(f'No target (loop @ {float(self.loop_z_start):.2f}m)')
-        
-        num_with_target = len(self.decays) - 1
-        if num_with_target > 0:
-            for i in range(num_with_target):
-                loop_z = self.loop_z_start + i * self.loop_z_increment
-                distance_from_target = abs(loop_z - float(self.cfg.target_z))
-                if num_with_target > 1:
-                    norm_dist = i / (num_with_target - 1)
-                else:
-                    norm_dist = 0.5
-                
-                r = 0.1 + norm_dist * 0.5   # 0.1 -> 0.6
-                g = 0.2 + norm_dist * 0.5   # 0.2 -> 0.7
-                b = 0.8 + norm_dist * 0.2   # 0.8 -> 1.0
-                
-                colors.append((r, g, b))
-                labels.append(f'With target (loop @ {loop_z:.2f}m, dist={distance_from_target:.2f}m)')
+        for dataset in self.datasets:
+            label_name = dataset['label']
+            decays = dataset['decays']
+            base_color = self._get_color_for_label(label_name)
+            
+            # First decay is always "no target" in red
+            colors.append('red')
+            labels.append(f'No target [{label_name}] (loop @ {float(self.loop_z_start):.2f}m)')
+            
+            # Remaining decays are "with target" in gradient colors
+            num_with_target = len(decays) - 1
+            if num_with_target > 0:
+                for i in range(num_with_target):
+                    loop_z = self.loop_z_start + i * self.loop_z_increment
+                    distance_from_target = abs(loop_z - float(self.cfg.target_z))
+                    
+                    if num_with_target > 1:
+                        norm_dist = i / (num_with_target - 1)
+                    else:
+                        norm_dist = 0.5
+                    
+                    color = self._generate_color_shade(base_color, norm_dist)
+                    colors.append(color)
+                    labels.append(f'With target [{label_name}] (loop @ {loop_z:.2f}m, dist={distance_from_target:.2f}m)')
         
         return colors, labels
     
     def plot_tdem_linear(self):
         """Plot TDEM response on linear scale."""
-        if self.times is None or self.decays is None:
+        if not self.datasets:
             print("No TDEM data available. Use update_times_data() first.")
             return
         
-        time = self.times[0] * 1e6  # Convert to μs
         colors, labels = self._get_colors_labels()
         
         fig = plt.figure(figsize=(10, 6))
         ax = fig.add_subplot(111)
         
-        for i, decay in enumerate(self.decays):
-            ax.plot(time, decay, marker='x', markersize=3, color=colors[i], 
-                    label=labels[i], linewidth=2, alpha=0.8)
+        color_idx = 0
+        for dataset in self.datasets:
+            times = dataset['times']
+            decays = dataset['decays']
+            
+            # Handle time as list or array
+            if isinstance(times, list):
+                time = times[0] * 1e6  # Convert to μs
+            else:
+                time = times * 1e6
+            
+            for decay in decays:
+                ax.plot(time, decay, marker='x', markersize=3, color=colors[color_idx], 
+                        label=labels[color_idx], linewidth=2, alpha=0.8)
+                color_idx += 1
         
         ax.set_xlabel("Time [μs]", fontsize=12)
         ax.set_ylabel("-dBz/dt [T/s]", fontsize=12)
         ax.set_title("TDEM Decay Curve (Linear Scale)", fontsize=14, fontweight='bold')
         ax.grid(True, alpha=0.3)
-        ax.set_xlim((0, time.max()))
+        
+        # Get max time from all datasets
+        if isinstance(self.datasets[0]['times'], list):
+            max_time = self.datasets[0]['times'][0].max() * 1e6
+        else:
+            max_time = self.datasets[0]['times'].max() * 1e6
+        ax.set_xlim((0, max_time))
+        
         ax.legend(loc='best', fontsize=9)
         
         plt.tight_layout()
@@ -100,27 +182,46 @@ class PiPlotter:
     
     def plot_tdem_loglog(self):
         """Plot TDEM response on log-log scale."""
-        if self.times is None or self.decays is None:
+        if not self.datasets:
             print("No TDEM data available. Use update_times_data() first.")
             return
         
-        time = self.times[0] * 1e6  # Convert to μs
         colors, labels = self._get_colors_labels()
         
         fig = plt.figure(figsize=(10, 6))
         ax = fig.add_subplot(111)
         
-        for i, decay in enumerate(self.decays):
-            ax.loglog(time, decay, marker='x', markersize=3, color=colors[i], 
-                      label=labels[i], linewidth=2, alpha=0.8)
+        color_idx = 0
+        min_time = float('inf')
+        max_time = 0
+        
+        for dataset in self.datasets:
+            times = dataset['times']
+            decays = dataset['decays']
+            
+            # Handle time as list or array
+            if isinstance(times, list):
+                time = times[0] * 1e6  # Convert to μs
+            else:
+                time = times * 1e6
+            
+            min_time = min(min_time, time.min())
+            max_time = max(max_time, time.max())
+            
+            for decay in decays:
+                ax.loglog(time, decay, marker='x', markersize=3, color=colors[color_idx], 
+                          label=labels[color_idx], linewidth=2, alpha=0.8)
+                color_idx += 1
         
         ax.set_xlabel("Time [μs]", fontsize=12)
         ax.set_ylabel("-dBz/dt [T/s]", fontsize=12)
         ax.set_title("TDEM Decay Curve (Log-Log Scale)", fontsize=14, fontweight='bold')
         ax.grid(True, alpha=0.3, which='both')
+        
         # Set xlim only if min is positive for log scale
-        if time.min() > 0:
-            ax.set_xlim((time.min(), time.max()))
+        if min_time > 0:
+            ax.set_xlim((min_time, max_time))
+        
         ax.legend(loc='best', fontsize=9)
         
         plt.tight_layout()

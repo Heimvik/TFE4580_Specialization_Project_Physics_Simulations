@@ -8,8 +8,8 @@ import numpy as np
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 
-from SIMPEG.pi_config import PiConfig
-from SIMPEG.pi_plotter import PiPlotter
+from pi_config import PiConfig
+from pi_plotter import PiPlotter
 
 
 class PiSimulator:
@@ -119,9 +119,9 @@ class PiSimulator:
             )
             simulations[i+1].time_steps = self.cfg.time_steps
 
-        decays, times = [],[]
+        decays, time = [],[]
+        time.append(time_channels)
         for i in range(len(simulations)):
-            times.append(time_channels)
             if i == 0:
                 dpred = simulations[i].dpred(m=models[0]["model"])
             else:
@@ -141,13 +141,52 @@ class PiSimulator:
             'num_increments': self.num_increments
         }
         
-        return times, decays, plotting_info
+        return time, decays, plotting_info
 
 class PiConditioner:
     def __init__(self):
         pass
 
+    # Assuming additive WGN, late_time is the time the signal power is counted
+    def add_noise(self, time, data, late_time, snr_db):
+        # Handle if time is a list (from simulator.run())
+        if isinstance(time, list):
+            time = time[0]
+        
+        # Handle if time is 2D array, extract first row
+        if hasattr(time, 'ndim') and time.ndim > 1:
+            time = time[0]
+        
+        print(f"Time range: {time[0]:.6e} to {time[-1]:.6e}")
+        
+        if late_time < time[0]:
+            raise ValueError("late_time must be within the range of time array")
+        if late_time > time[-1]:
+            raise ValueError("late_time must be within the range of time array")
+
+        idx = np.where(time >= late_time)[0]
+        if len(idx) == 0:
+            raise ValueError("late_time is beyond the maximum time in the array")
+        idx = idx[0]
+
+        signal_power = np.mean(data[idx:]**2)
+        snr_linear = 10**(snr_db / 10)
+        noise_power = signal_power / snr_linear
+        noise_std = np.sqrt(noise_power)
+
+        noise = np.random.normal(0, noise_std, size=data.shape)
+        return data + noise
+        
+
     def amplify(self, time, data, time_gain):
+        # Handle if time is a list (from simulator.run())
+        if isinstance(time, list):
+            time = time[0]
+        
+        # Handle if time is 2D array, extract first row
+        if hasattr(time, 'ndim') and time.ndim > 1:
+            time = time[0]
+        
         time_gain = np.array(time_gain)
         if time_gain.size > 0:
             time_gain = time_gain[np.argsort(time_gain[:, 0])]
@@ -159,17 +198,16 @@ class PiConditioner:
 
     def normalize(self, data, max=None):
         max = np.max(np.abs(data)) if max is None else max
-        return data/max
+        return np.maximum(data / max, 0)
 
     def quantize(self, data, depth, dtype):
         return (np.round(data * 2**depth)).astype(dtype)
 
 cfg = PiConfig('config.json')
-simulator = PiSimulator(cfg, loop_z_start=cfg.tx_z, loop_z_increment=0.08, num_increments=5)
+simulator = PiSimulator(cfg, loop_z_start=cfg.tx_z, loop_z_increment=0.1, num_increments=2)
 conditioner = PiConditioner()
 
-time, data, plotting_info = simulator.run()
-
+time, unconditioned_data, plotting_info = simulator.run()
 plotter = PiPlotter(
     plotting_info,
     plot_linear=True,      # TDEM response linear scale
@@ -179,12 +217,27 @@ plotter = PiPlotter(
     plot_3d=True           # 3D environment model
 )
 
-plotter.update_times_data(time, data)
-plotter.show_plots()
+#plotter.update_times_data(time, unconditioned_data, label='unconditioned', replace=True)
 
-data = conditioner.amplify(time, data, time_gain=[[1e-5,10], [1e-4,100]])
-data = conditioner.normalize(data,0.7)
-data = conditioner.quantize(data, depth=8, dtype=np.uint8)
 
-plotter.update_times_data(time, data)
+data_noise_free = []
+for decay in unconditioned_data:
+    processed = conditioner.amplify(time, decay, time_gain=[[1e-5,10]])
+    processed = conditioner.normalize(processed, 0.7)
+    processed = conditioner.quantize(processed, depth=8, dtype=np.uint8)
+    data_noise_free.append(processed)
+
+#plotter.update_times_data(time, data_noise_free, label='noise_free', replace=False)
+#plotter.show_plots()
+
+data_noise_10db = []
+for decay in unconditioned_data:
+    noisy = conditioner.add_noise(time, decay, late_time=10e-6, snr_db=10)
+    noisy = conditioner.amplify(time, noisy, time_gain=[[50e-6,10]])
+    noisy = conditioner.normalize(noisy, 0.7)
+    noisy = conditioner.quantize(noisy, depth=8, dtype=np.uint8)
+    data_noise_10db.append(noisy)
+
+plotter.update_times_data(time, data_noise_10db, label='noisy', replace=True)
+
 plotter.show_plots()
