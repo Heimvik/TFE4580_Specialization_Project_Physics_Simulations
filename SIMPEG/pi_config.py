@@ -15,7 +15,7 @@ import numpy as np
 from typing import Dict, Any, Optional
 
 
-class TDEMConfig:
+class PiConfig:
     """
     Configuration manager for TDEM simulations.
     
@@ -249,7 +249,7 @@ class TDEMConfig:
 # Example usage
 if __name__ == "__main__":
     # Load configuration
-    config = TDEMConfig('config.json')
+    config = PiConfig('config.json')
     
     # Print summary
     print(config.summary())
