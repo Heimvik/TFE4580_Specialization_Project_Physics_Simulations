@@ -65,11 +65,39 @@ class PiSimulator:
         model[ind_soil] = self.cfg.soil_conductivity
 
         if target_present:
-            ind_can = (
-                (r <= self.cfg.target_radius) &
-                (z < self.cfg.target_z + self.cfg.target_height/2) &
-                (z > self.cfg.target_z - self.cfg.target_height/2)
-            )
+            inner_radius = self.cfg.target_radius - self.cfg.target_thickness
+            if inner_radius < 0:
+                inner_radius = 0
+            unique_r = np.unique(r)
+            if len(unique_r) > 1:
+                min_cell_width = np.min(np.diff(unique_r[unique_r > 0]))
+            else:
+                min_cell_width = 0.01  # Default cell width
+            
+            if self.cfg.target_thickness < min_cell_width:
+                top_z = self.cfg.target_z + self.cfg.target_height/2
+                bottom_z = self.cfg.target_z - self.cfg.target_height/2
+                
+                if self.cfg.target_thickness < min_cell_width:
+                    ind_walls = (
+                        (r >= self.cfg.target_radius - min_cell_width) &
+                        (r <= self.cfg.target_radius) &
+                        (z < top_z) &
+                        (z > bottom_z)
+                    )
+                else:
+                    ind_walls = (
+                        (r >= inner_radius) &
+                        (r <= self.cfg.target_radius) &
+                        (z < top_z) &
+                        (z > bottom_z)
+                    )
+                
+                ind_top = (r <= self.cfg.target_radius) & (np.abs(z - top_z) <= 0.01)
+                ind_bottom = (r <= self.cfg.target_radius) & (np.abs(z - bottom_z) <= 0.01)
+                
+                ind_can = ind_walls | ind_top | ind_bottom
+            
             model[ind_can] = self.cfg.aluminum_conductivity
 
         return {"model": model, "model_map": model_map}

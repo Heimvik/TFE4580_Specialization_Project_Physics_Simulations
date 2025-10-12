@@ -76,6 +76,7 @@ class PiConfig:
         # Target geometry (aluminum can dimensions)
         self.target_radius = self._config_data.get('target_radius', 0.0325)  # 3.25 cm
         self.target_height = self._config_data.get('target_height', 0.12)    # 12 cm
+        self.target_thickness = self._config_data.get('target_thickness', 0.002)  # 2 mm wall thickness
         
         # Conductivity values (S/m)
         self.air_conductivity = self._config_data.get('air_conductivity', 1e-8)
@@ -217,6 +218,7 @@ class PiConfig:
             f"  Center (x, y, z): ({self.target_x}, {self.target_y}, {self.target_z}) m",
             f"  Radius: {self.target_radius*1000:.2f} mm",
             f"  Height: {self.target_height*1000:.2f} mm",
+            f"  Wall thickness: {self.target_thickness*1000:.2f} mm",
             f"  Conductivity: {self.target_conductivity:.2e} S/m",
             "",
             "Conductivity Model:",

@@ -19,7 +19,7 @@
     "target_z": 0.0,
     "target_radius": 0.0325,
     "target_height": 0.12,
-    "target_thickness": 0.02,
+    "target_thickness": 0.005,
     
     "air_conductivity": 1e-8,
     "soil_conductivity": 0.4,
