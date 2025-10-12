@@ -245,7 +245,7 @@ plotter = PiPlotter(
     plot_3d=True           # 3D environment model
 )
 
-#plotter.update_times_data(time, unconditioned_data, label='unconditioned', replace=True)
+plotter.update_times_data(time, unconditioned_data, label='unconditioned', replace=True)
 
 
 data_noise_free = []
@@ -255,8 +255,7 @@ for decay in unconditioned_data:
     processed = conditioner.quantize(processed, depth=8, dtype=np.uint8)
     data_noise_free.append(processed)
 
-#plotter.update_times_data(time, data_noise_free, label='noise_free', replace=False)
-#plotter.show_plots()
+plotter.update_times_data(time, data_noise_free, label='noise_free', replace=False)
 
 data_noise_10db = []
 for decay in unconditioned_data:
