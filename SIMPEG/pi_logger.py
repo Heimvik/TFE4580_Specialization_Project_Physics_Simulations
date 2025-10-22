@@ -40,32 +40,26 @@ class PiLogger:
         
         print("PiLogger initialized. Ready to log TDEM data.")
     
-    def append_data(self, data: np.ndarray, target_class: str, metadata: Optional[Dict[str, Any]] = None):
+    def append_data(self, data: np.ndarray, label: str, metadata: Optional[Dict[str, Any]] = None):
         """
-        Append TDEM data with target presence annotation.
+        Append TDEM data with configuration label.
         
         Parameters
         ----------
         data : np.ndarray
             TDEM decay curve data. Can be 1D array (single curve) or 2D array (multiple curves).
             If 2D, each row is treated as a separate data sample.
-        target_class : str
-            Target classification: 'target_present' or 'target_absent'
-            - 'target_present': Target is in grass layer (shallow burial)
-            - 'target_absent': Target in ground or not present at all
+        label : str
+            Configuration label from simulator (e.g., 'L0.41-T-0.34' or 'L0.45-T-')
+            Format: L<loop_z>-T<target_z> or L<loop_z>-T- (no target)
         metadata : dict, optional
-            Additional metadata to store with this data entry (e.g., depth, conductivity, etc.)
+            Additional metadata to store with this data entry (e.g., loop_z, target_z, etc.)
         
         Raises
         ------
         ValueError
-            If target_class is not valid or data format is incompatible
+            If data format is incompatible
         """
-        # Validate target class
-        valid_classes = ['target_present', 'target_absent']
-        if target_class not in valid_classes:
-            raise ValueError(f"target_class must be one of {valid_classes}, got '{target_class}'")
-        
         # Convert data to numpy array if it's a list
         if isinstance(data, list):
             data = np.array(data)
@@ -85,25 +79,45 @@ class PiLogger:
                 f"Data shape mismatch: expected {self.data_shape} features, got {data.shape[1]}"
             )
         
+        # Determine target class from label (T- means no target)
+        has_target = not label.endswith('T-')
+        target_class = 'target_present' if has_target else 'target_absent'
+        binary_label = 1 if has_target else 0
+        
+        # Parse label for loop_z and target_z
+        try:
+            parts = label.split('-')
+            loop_z_str = parts[0].replace('L', '')
+            target_z_str = parts[1].replace('T', '') if len(parts) > 1 else ''
+            
+            loop_z = float(loop_z_str) if loop_z_str else None
+            target_z = float(target_z_str) if target_z_str and target_z_str != '' else None
+        except (ValueError, IndexError):
+            loop_z = None
+            target_z = None
+        
         # Store each sample as a separate entry
         num_samples = data.shape[0]
         for i in range(num_samples):
             entry = {
                 'data': data[i, :],
+                'label': label,  # Configuration label (e.g., L0.41-T-0.34)
                 'target_class': target_class,
-                'label': 1 if target_class == 'target_present' else 0,
+                'binary_label': binary_label,  # 1=present, 0=absent for CNN training
+                'loop_z': loop_z,
+                'target_z': target_z,
                 'timestamp': datetime.now().isoformat(),
                 'metadata': metadata if metadata is not None else {}
             }
             self.data_entries.append(entry)
             
             # Update counters
-            if target_class == 'target_present':
+            if has_target:
                 self.num_target_present += 1
             else:
                 self.num_target_absent += 1
         
-        print(f"Appended {num_samples} sample(s) with class '{target_class}'")
+        print(f"Appended {num_samples} sample(s) with label '{label}' (class: {target_class})")
         print(f"Total: {len(self.data_entries)} samples "
               f"({self.num_target_present} present, {self.num_target_absent} absent)")
     
@@ -237,6 +251,17 @@ class PiLogger:
         """
         Export a data split to CSV file in TensorFlow-compatible format.
         
+        CSV Format:
+        -----------
+        config_label, loop_z, target_z, binary_label, feature_0, feature_1, ..., feature_N
+        
+        Where:
+        - config_label: Configuration identifier (e.g., L0.41-T-0.34)
+        - loop_z: Loop height in meters
+        - target_z: Target depth in meters (or empty for no target)
+        - binary_label: 1=target present, 0=target absent (for CNN classification)
+        - feature_i: TDEM decay curve values (time series data)
+        
         Parameters
         ----------
         indices : np.ndarray
@@ -248,29 +273,46 @@ class PiLogger:
         """
         # Gather data for this split
         data_matrix = []
-        labels = []
+        config_labels = []
+        binary_labels = []
+        loop_zs = []
+        target_zs = []
         
         for idx in indices:
             entry = self.data_entries[idx]
             data_matrix.append(entry['data'])
-            labels.append(entry['label'])
+            config_labels.append(entry['label'])
+            binary_labels.append(entry['binary_label'])
+            loop_zs.append(entry.get('loop_z', ''))
+            target_zs.append(entry.get('target_z', ''))
         
         # Convert to numpy arrays
         data_matrix = np.array(data_matrix)
-        labels = np.array(labels)
+        binary_labels = np.array(binary_labels)
         
-        # Create DataFrame with feature columns and label
+        # Create DataFrame with all columns
+        # First: metadata columns
+        df = pd.DataFrame({
+            'config_label': config_labels,
+            'loop_z': loop_zs,
+            'target_z': target_zs,
+            'binary_label': binary_labels
+        })
+        
+        # Then: feature columns (TDEM decay curve)
         feature_cols = [f'feature_{i}' for i in range(data_matrix.shape[1])]
-        df = pd.DataFrame(data_matrix, columns=feature_cols)
-        df['label'] = labels
+        feature_df = pd.DataFrame(data_matrix, columns=feature_cols)
+        
+        # Concatenate metadata and features
+        df = pd.concat([df, feature_df], axis=1)
         
         # Export to CSV
         df.to_csv(filepath, index=False)
         
         # Print split statistics
-        num_present = np.sum(labels == 1)
-        num_absent = np.sum(labels == 0)
-        print(f"  {split_name}: {len(labels)} samples ({num_present} present, {num_absent} absent)")
+        num_present = np.sum(binary_labels == 1)
+        num_absent = np.sum(binary_labels == 0)
+        print(f"  {split_name}: {len(binary_labels)} samples ({num_present} present, {num_absent} absent)")
     
     def _save_metadata(self, filepath: str, train_size: int, val_size: int, test_size: int,
                       train_percent: float, test_percent: float, val_percent: float, seed: Optional[int]):
@@ -294,13 +336,28 @@ class PiLogger:
                 'target_absent': self.num_target_absent
             },
             'random_seed': seed,
-            'data_format': 'CSV with feature columns and binary label (1=present, 0=absent)'
+            'csv_format': {
+                'columns': [
+                    'config_label: Configuration identifier (e.g., L0.41-T-0.34)',
+                    'loop_z: Loop height in meters',
+                    'target_z: Target depth in meters (empty if no target)',
+                    'binary_label: 1=target present, 0=target absent (use for CNN training)',
+                    'feature_0 to feature_N: TDEM decay curve time series data'
+                ],
+                'label_format': 'L<loop_z>-T<target_z> or L<loop_z>-T- (no target)',
+                'tensorflow_usage': 'Load CSV, extract feature_* columns as input, binary_label as output'
+            },
+            'data_description': {
+                'input_features': f'{self.data_shape} time samples of TDEM decay curve (-dBz/dt)',
+                'output_classes': '2 (binary classification: target present/absent)',
+                'recommended_model': 'CNN for 1D time series classification'
+            }
         }
         
         with open(filepath, 'w') as f:
             json.dump(metadata, f, indent=4)
     
-    def plot_csv_data(self, csv_filepath: str, sampling_rate: float, 
+    def plot_csv_data(self, csv_filepath: str, time_axis: Optional[np.ndarray] = None,
                      num_samples: int = 5, save_fig: Optional[str] = None):
         """
         Plot TDEM decay curves from CSV file for verification.
@@ -309,8 +366,8 @@ class PiLogger:
         ----------
         csv_filepath : str
             Path to CSV file to plot
-        sampling_rate : float
-            Sampling rate in Hz (samples per second) to compute time axis
+        time_axis : np.ndarray, optional
+            Time axis in microseconds. If None, will use indices.
         num_samples : int, optional
             Number of random samples to plot (default: 5)
         save_fig : str, optional
@@ -322,50 +379,63 @@ class PiLogger:
         # Extract features and labels
         feature_cols = [col for col in df.columns if col.startswith('feature_')]
         data_matrix = df[feature_cols].values
-        labels = df['label'].values
+        binary_labels = df['binary_label'].values
+        config_labels = df['config_label'].values
         
-        # Compute time axis from sampling rate
-        num_points = len(feature_cols)
-        time_step = 1.0 / sampling_rate  # seconds
-        time_axis = np.arange(num_points) * time_step * 1e6  # Convert to microseconds
+        # Create time axis if not provided
+        if time_axis is None:
+            time_axis = np.arange(len(feature_cols))
+            time_label = 'Sample Index'
+        else:
+            time_label = 'Time [μs]'
         
         # Randomly select samples to plot
-        num_total = len(labels)
+        num_total = len(binary_labels)
         if num_samples > num_total:
             num_samples = num_total
         
         plot_indices = np.random.choice(num_total, size=num_samples, replace=False)
         
         # Create figure
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10))
         
         # Plot target present samples
-        present_indices = [idx for idx in plot_indices if labels[idx] == 1]
-        for idx in present_indices:
-            ax1.plot(time_axis, data_matrix[idx, :], alpha=0.7, linewidth=2)
+        present_indices = [idx for idx in plot_indices if binary_labels[idx] == 1]
+        colors_present = plt.cm.tab10(np.linspace(0, 1, len(present_indices)))
         
-        ax1.set_xlabel('Time [μs]', fontsize=12)
-        ax1.set_ylabel('Signal Amplitude', fontsize=12)
+        for i, idx in enumerate(present_indices):
+            label = config_labels[idx]
+            ax1.plot(time_axis, data_matrix[idx, :], alpha=0.8, linewidth=2, 
+                    color=colors_present[i], label=label)
+        
+        ax1.set_xlabel(time_label, fontsize=12)
+        ax1.set_ylabel('-dBz/dt [T/s]', fontsize=12)
         ax1.set_title(f'Target Present Samples (n={len(present_indices)})', 
                      fontsize=14, fontweight='bold')
-        ax1.grid(True, alpha=0.3)
-        ax1.legend([f'Sample {idx}' for idx in present_indices], loc='best')
+        ax1.set_yscale('log')
+        ax1.grid(True, alpha=0.3, which='both')
+        ax1.legend(loc='best', fontsize=9)
         
         # Plot target absent samples
-        absent_indices = [idx for idx in plot_indices if labels[idx] == 0]
-        for idx in absent_indices:
-            ax2.plot(time_axis, data_matrix[idx, :], alpha=0.7, linewidth=2)
+        absent_indices = [idx for idx in plot_indices if binary_labels[idx] == 0]
+        colors_absent = plt.cm.tab10(np.linspace(0, 1, len(absent_indices)))
         
-        ax2.set_xlabel('Time [μs]', fontsize=12)
-        ax2.set_ylabel('Signal Amplitude', fontsize=12)
+        for i, idx in enumerate(absent_indices):
+            label = config_labels[idx]
+            ax2.plot(time_axis, data_matrix[idx, :], alpha=0.8, linewidth=2,
+                    color=colors_absent[i], label=label)
+        
+        ax2.set_xlabel(time_label, fontsize=12)
+        ax2.set_ylabel('-dBz/dt [T/s]', fontsize=12)
         ax2.set_title(f'Target Absent Samples (n={len(absent_indices)})', 
                      fontsize=14, fontweight='bold')
-        ax2.grid(True, alpha=0.3)
-        ax2.legend([f'Sample {idx}' for idx in absent_indices], loc='best')
+        ax2.set_yscale('log')
+        ax2.grid(True, alpha=0.3, which='both')
+        ax2.legend(loc='best', fontsize=9)
         
         # Add overall title
         filename = os.path.basename(csv_filepath)
-        fig.suptitle(f'TDEM Data Verification: {filename}\nSampling Rate: {sampling_rate} Hz', 
+        fig.suptitle(f'TDEM Dataset Verification: {filename}', 
                     fontsize=16, fontweight='bold')
         
         plt.tight_layout()
@@ -429,23 +499,25 @@ if __name__ == "__main__":
     # Create logger
     logger = PiLogger()
     
-    # Simulate some data
+    # Simulate some data with configuration labels
     print("\n--- Simulating data logging ---")
     
     # Generate mock TDEM data (1024 time samples)
     time_samples = 1024
     
-    # Add target present samples
+    # Add target present samples with labels
     for i in range(50):
         data = np.random.randn(time_samples) * np.exp(-np.linspace(0, 5, time_samples))
-        metadata = {'depth': 0.05, 'conductivity': 3.5e7}
-        logger.append_data(data, 'target_present', metadata)
+        label = f"L{0.3 + i*0.01:.2f}-T{-0.3 - i*0.01:.2f}"
+        metadata = {'loop_z': 0.3 + i*0.01, 'target_z': -0.3 - i*0.01}
+        logger.append_data(data, label, metadata)
     
-    # Add target absent samples
+    # Add target absent samples with labels
     for i in range(50):
         data = np.random.randn(time_samples) * np.exp(-np.linspace(0, 3, time_samples)) * 0.1
-        metadata = {'depth': None, 'conductivity': 0.4}
-        logger.append_data(data, 'target_absent', metadata)
+        label = f"L{0.3 + i*0.01:.2f}-T-"
+        metadata = {'loop_z': 0.3 + i*0.01, 'target_z': None}
+        logger.append_data(data, label, metadata)
     
     # Print summary
     logger.print_summary()
@@ -459,6 +531,9 @@ if __name__ == "__main__":
         seed=42
     )
     
+    # Create time axis for plotting
+    time_axis = np.linspace(0, 1024, time_samples)  # microseconds
+    
     # Plot validation data
     print("\n--- Plotting validation data ---")
-    logger.plot_csv_data(val_path, sampling_rate=1e6, num_samples=3)
+    logger.plot_csv_data(val_path, time_axis=time_axis, num_samples=3)

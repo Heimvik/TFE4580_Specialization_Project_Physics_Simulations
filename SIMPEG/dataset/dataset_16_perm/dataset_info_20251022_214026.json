@@ -1,0 +1,36 @@
+{
+    "creation_timestamp": "2025-10-22T21:40:26.821589",
+    "total_samples": 16,
+    "feature_dimension": 1024,
+    "split_sizes": {
+        "train": 11,
+        "validation": 3,
+        "test": 2
+    },
+    "split_percentages": {
+        "train": 70.0,
+        "validation": 15.0,
+        "test": 15.0
+    },
+    "class_distribution": {
+        "target_present": 8,
+        "target_absent": 8
+    },
+    "random_seed": 42,
+    "csv_format": {
+        "columns": [
+            "config_label: Configuration identifier (e.g., L0.41-T-0.34)",
+            "loop_z: Loop height in meters",
+            "target_z: Target depth in meters (empty if no target)",
+            "binary_label: 1=target present, 0=target absent (use for CNN training)",
+            "feature_0 to feature_N: TDEM decay curve time series data"
+        ],
+        "label_format": "L<loop_z>-T<target_z> or L<loop_z>-T- (no target)",
+        "tensorflow_usage": "Load CSV, extract feature_* columns as input, binary_label as output"
+    },
+    "data_description": {
+        "input_features": "1024 time samples of TDEM decay curve (-dBz/dt)",
+        "output_classes": "2 (binary classification: target present/absent)",
+        "recommended_model": "CNN for 1D time series classification"
+    }
+}

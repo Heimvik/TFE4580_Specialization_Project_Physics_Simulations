@@ -354,8 +354,8 @@ simulator = PiSimulator(
     cfg, 
     loop_z=[0.3, 0.5],      # Loop height range (must be >= separation_z = 0.3)
     target_z=[-0.5, -0.3],  # Target depth range (must be <= -separation_z = -0.3)
-    decays_target_present=2,   # Reduced for testing
-    decays_target_absent=2     # Reduced for testing
+    decays_target_present=40,   # Reduced for testing
+    decays_target_absent=40     # Reduced for testing
 )
 conditioner = PiConditioner()
 
@@ -380,4 +380,57 @@ for i, (time, decay) in enumerate(zip(target_absent_times, target_absent_decays)
     label = plotting_info['target_absent_metadata'][i]['label']
     plotter.update_times_data([time], [decay], label=label, replace=False)
 
+# Create logger and save dataset
+print("\n=== Creating ML Dataset ===")
+logger = PiLogger()
+
+# Log all target-present data
+for i, (time, decay) in enumerate(zip(target_present_times, target_present_decays)):
+    metadata = plotting_info['target_present_metadata'][i]
+    label = metadata['label']
+    logger.append_data(decay, label, metadata)
+
+# Log all target-absent data
+for i, (time, decay) in enumerate(zip(target_absent_times, target_absent_decays)):
+    metadata = plotting_info['target_absent_metadata'][i]
+    label = metadata['label']
+    logger.append_data(decay, label, metadata)
+
+# Print dataset summary
+logger.print_summary()
+
+# Ask user if they want to export the dataset
+print("\nWould you like to export this dataset to CSV files?")
+print("This will split the data into train/validation/test sets.")
+export_choice = input("Export dataset? (y/n): ").strip().lower()
+
+if export_choice == 'y':
+    # Get split percentages
+    try:
+        train_pct = float(input("Training set percentage (default 70): ").strip() or "70")
+        test_pct = float(input("Test set percentage (default 15): ").strip() or "15")
+        output_dir = input("Output directory (default 'dataset'): ").strip() or "dataset"
+        
+        # Split and export
+        train_path, val_path, test_path = logger.split_data(
+            train_percent=train_pct,
+            test_percent=test_pct,
+            output_dir=output_dir,
+            seed=42
+        )
+        
+        print("\n✓ Dataset exported successfully!")
+        print(f"\nTo use with TensorFlow:")
+        print(f"  1. Load CSV: df = pd.read_csv('{train_path}')")
+        print(f"  2. Extract features: X = df[[col for col in df.columns if col.startswith('feature_')]].values")
+        print(f"  3. Extract labels: y = df['binary_label'].values")
+        print(f"  4. Train CNN on X (input) and y (output)")
+        
+    except ValueError as e:
+        print(f"Error: {e}")
+        print("Skipping dataset export.")
+else:
+    print("Dataset export skipped.")
+
+# Show interactive plots
 plotter.show_plots()
