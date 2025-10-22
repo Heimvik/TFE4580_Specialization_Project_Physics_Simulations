@@ -10,74 +10,97 @@ import matplotlib.pyplot as plt
 
 from pi_config import PiConfig
 from pi_plotter import PiPlotter
+from pi_logger import PiLogger
 
 
 class PiSimulator:
-    def __init__(self, config, loop_z_start=0.2, loop_z_increment=0.05, num_increments=0):
+    def __init__(self, config, loop_z, target_z, decays_target_present=100, decays_target_absent=100): 
         self.cfg = config
-        self.num_increments = num_increments
-        self.loop_z_start = float(loop_z_start)
-        self.loop_z_increment = float(loop_z_increment)
+        # These two defines the range in which the simulation data should be randomized within
+        self.loop_z = loop_z
+        self.target_z = target_z
+        
+        self.decays_target_present = decays_target_present
+        self.decays_target_absent = decays_target_absent
 
-    def create_survey(self, time_channels, waveform, loop_z):
-        # Transmitter location
-        xtx, ytx, ztx = np.meshgrid([0], [0], [loop_z])
-        source_locations = np.c_[mkvc(xtx), mkvc(ytx), mkvc(ztx)]
-        ntx = np.size(xtx)
-        # Receiver location
-        xrx, yrx, zrx = np.meshgrid([0], [0], [loop_z])
-        receiver_locations = np.c_[mkvc(xrx), mkvc(yrx), mkvc(zrx)]
-
-        source_list = []
-
-        for ii in range(ntx):
+    def create_surveys(self, time_channels, waveform):
+        surveys_list = []
+    
+        for i in range(self.decays_target_present+self.decays_target_absent):
+            loop_z_val = np.random.uniform(self.loop_z[0], self.loop_z[1])
+            while loop_z_val < self.cfg.separation_z:
+                print(f"Warning: Generated loop_z={loop_z_val:.4f} < separation_z={self.cfg.separation_z}. Regenerating...")
+                loop_z_val = np.random.uniform(self.loop_z[0], self.loop_z[1])
+            
+            xtx, ytx, ztx = np.meshgrid([0], [0], [loop_z_val])
+            source_locations = np.c_[mkvc(xtx), mkvc(ytx), mkvc(ztx)]
+            
+            xrx, yrx, zrx = np.meshgrid([0], [0], [loop_z_val])
+            receiver_locations = np.c_[mkvc(xrx), mkvc(yrx), mkvc(zrx)]
+            
+            source_list = []
             dbzdt_receiver = tdem.receivers.PointMagneticFluxTimeDerivative(
-                receiver_locations[ii, :], time_channels, "z"
+                receiver_locations[0, :], time_channels, "z"
             )
             receivers_list = [dbzdt_receiver]
-
+            
             source_list.append(
                 tdem.sources.CircularLoop(
                     receivers_list,
-                    location=source_locations[ii],
+                    location=source_locations[0],
                     waveform=waveform,
                     current=self.cfg.tx_current,
                     radius=self.cfg.tx_radius,
                     n_turns=self.cfg.tx_n_turns
                 )
             )
-        return tdem.Survey(source_list)
-
-    def create_conductivity_model(self, mesh, target_present):
-        active_area_z = self.cfg.target_z + self.cfg.target_height/2
-        ind_active = mesh.cell_centers[:, 2] < active_area_z
-
-        model_map = maps.InjectActiveCells(mesh, ind_active, self.cfg.air_conductivity)
-
-        r = mesh.cell_centers[ind_active, 0]
-        z = mesh.cell_centers[ind_active, 2]
-
-        model = self.cfg.air_conductivity * np.ones(ind_active.sum())
-
-        ind_soil = (
-            (z < self.cfg.target_z - self.cfg.target_height/2)
-        )
-        model[ind_soil] = self.cfg.soil_conductivity
-
-        if target_present:
-            inner_radius = self.cfg.target_radius - self.cfg.target_thickness
-            if inner_radius < 0:
-                inner_radius = 0
-            unique_r = np.unique(r)
-            if len(unique_r) > 1:
-                min_cell_width = np.min(np.diff(unique_r[unique_r > 0]))
-            else:
-                min_cell_width = 0.01  # Default cell width
             
-            if self.cfg.target_thickness < min_cell_width:
-                top_z = self.cfg.target_z + self.cfg.target_height/2
-                bottom_z = self.cfg.target_z - self.cfg.target_height/2
+            survey = tdem.Survey(source_list)
+            
+            surveys_list.append({
+                'loop_z': loop_z_val,
+                'survey': survey
+            })        
+        print(f"Created {len(surveys_list)} surveys successfully.\n")
+        return surveys_list
+
+    def create_conductivity_models(self, mesh):
+        model_list = []
+        for i in range(self.decays_target_present+self.decays_target_absent):
+            target_z_val = None
+            if i < self.decays_target_present:
+                target_z_val = np.random.uniform(self.target_z[0], self.target_z[1])
+                while target_z_val > self.cfg.separation_z:
+                    print(f"Warning: Generated target_z={target_z_val:.4f} > separation_z={-self.cfg.separation_z}. Regenerating...")
+                    target_z_val = np.random.uniform(self.target_z[0], self.target_z[1])
+            
+            active_area_z = self.cfg.separation_z
+            ind_active = mesh.cell_centers[:, 2] < active_area_z
+
+            model_map = maps.InjectActiveCells(mesh, ind_active, self.cfg.air_conductivity)
+
+            r = mesh.cell_centers[ind_active, 0]
+            z = mesh.cell_centers[ind_active, 2]
+
+            model = self.cfg.air_conductivity * np.ones(ind_active.sum())
+
+            ind_soil = (z < 0)
+            model[ind_soil] = self.cfg.soil_conductivity
+
+            if i < self.decays_target_present:
+                inner_radius = self.cfg.target_radius - self.cfg.target_thickness
+                if inner_radius < 0:
+                    inner_radius = 0
                 
+                unique_r = np.unique(r)
+                if len(unique_r) > 1:
+                    min_cell_width = np.min(np.diff(unique_r[unique_r > 0]))
+                else:
+                    min_cell_width = 0.01  # Default cell width
+                
+                top_z = target_z_val + self.cfg.target_height/2
+                bottom_z = target_z_val - self.cfg.target_height/2
+
                 if self.cfg.target_thickness < min_cell_width:
                     ind_walls = (
                         (r >= self.cfg.target_radius - min_cell_width) &
@@ -95,81 +118,174 @@ class PiSimulator:
                 
                 ind_top = (r <= self.cfg.target_radius) & (np.abs(z - top_z) <= 0.01)
                 ind_bottom = (r <= self.cfg.target_radius) & (np.abs(z - bottom_z) <= 0.01)
-                
                 ind_can = ind_walls | ind_top | ind_bottom
-            
-            model[ind_can] = self.cfg.aluminum_conductivity
+                model[ind_can] = self.cfg.aluminum_conductivity
 
-        return {"model": model, "model_map": model_map}
+            model_list.append({
+                "target_z": target_z_val,
+                "model": model,
+                "model_map": model_map
+            })
+        return model_list
 
     def run(self):
         print("Running simulation with the following configuration:")
-        print(self.cfg.summary())
+        try:
+            print(self.cfg.summary())
+        except UnicodeEncodeError:
+            print("[Configuration summary skipped due to encoding issue]")
+        print(f"\nGenerating {self.decays_target_present} target-present and {self.decays_target_absent} target-absent simulations...")
 
-        # 1. Define the waveform to be used, in this case - always a step-off
+        # 1. Define the waveform and time channels
         waveform = tdem.sources.StepOffWaveform(off_time=self.cfg.waveform_off_time)
         time_channels = np.linspace(0, 1024e-6, 1024)
 
-        # 2. Create the survey
-        surveys = []
-        for i in range(self.num_increments+2):
-            loop_z = self.loop_z_start + i * self.loop_z_increment
-            surveys.append(self.create_survey(time_channels, waveform, loop_z))
+        # 2. Create all surveys (returns list with decays_target_present + decays_target_absent surveys)
+        print("\n=== Creating Surveys ===")
+        surveys_list = self.create_surveys(time_channels, waveform)
 
         # 3. Create the mesh
+        print("\n=== Creating Mesh ===")
         hr = [(0.01, 15), (0.01, 15, 1.3), (0.05, 10, 1.5)]
         hphi = 1
         hz = [(0.01, 10, -1.3), (0.01, 30), (0.01, 10, 1.3)]
         mesh = CylindricalMesh([hr, hphi, hz], x0="00C")
+        print(f"Mesh created with {mesh.nC} cells")
 
-        # 4. Create all the different conductivity models
-        models = []
-        models.append(self.create_conductivity_model(mesh, target_present=False))
-        models.append(self.create_conductivity_model(mesh, target_present=True))
+        # 4. Create all conductivity models (returns list with all models, targets in first decays_target_absent entries due to bug)
+        print("\n=== Creating Conductivity Models ===")
+        models_list = self.create_conductivity_models(mesh)
+        print(f"Created {len(models_list)} conductivity models")
 
-        # 5. Create the simulation objects
-        simulations = []
+        # 5. Create and run simulations for ALL PERMUTATIONS of surveys and models
+        # Target-present models are in indices 0 to decays_target_present-1
+        # Target-absent models are in indices decays_target_present to end
         
-        # Simulation for baseline without the target
-        simulations.append(
-            tdem.simulation.Simulation3DMagneticFluxDensity(
-                mesh, survey=surveys[0], sigmaMap=models[0]["model_map"], t0=self.cfg.simulation_t0
-            )
-        )
-        simulations[0].time_steps = self.cfg.time_steps
-
-        for i in range(0,self.num_increments+1):
-            # Simulation for target present
-            simulations.append(
-                tdem.simulation.Simulation3DMagneticFluxDensity(
-                    mesh, survey=surveys[i], sigmaMap=models[1]["model_map"], t0=self.cfg.simulation_t0
+        print("\n=== Running ALL Permutations (Surveys × Models) ===")
+        print(f"Total surveys: {len(surveys_list)}")
+        print(f"Target-present models: {self.decays_target_present}")
+        print(f"Target-absent models: {self.decays_target_absent}")
+        
+        target_present_times = []
+        target_present_decays = []
+        target_present_metadata = []  # Store survey and model info
+        
+        target_absent_times = []
+        target_absent_decays = []
+        target_absent_metadata = []
+        
+        simulation_count = 0
+        total_simulations = len(surveys_list) * len(models_list)
+        
+        print(f"Total simulations to run: {total_simulations}")
+        
+        # Permutations with target-present models
+        print("\n=== Target-Present Permutations ===")
+        for survey_idx in range(len(surveys_list)):
+            for model_idx in range(self.decays_target_present):
+                simulation = tdem.simulation.Simulation3DMagneticFluxDensity(
+                    mesh, 
+                    survey=surveys_list[survey_idx]['survey'], 
+                    sigmaMap=models_list[model_idx]["model_map"], 
+                    t0=self.cfg.simulation_t0
                 )
-            )
-            simulations[i+1].time_steps = self.cfg.time_steps
+                simulation.time_steps = self.cfg.time_steps
+                
+                dpred = simulation.dpred(m=models_list[model_idx]["model"])
+                dpred = np.reshape(dpred, (1, len(time_channels)))
+                
+                loop_z_val = surveys_list[survey_idx]['loop_z']
+                target_z_val = models_list[model_idx]['target_z']
+                label = f"L{loop_z_val:.2f}-T{target_z_val:.2f}"
+                
+                target_present_times.append(time_channels)
+                target_present_decays.append(-dpred[0, :])
+                target_present_metadata.append({
+                    'survey_idx': survey_idx,
+                    'model_idx': model_idx,
+                    'loop_z': loop_z_val,
+                    'target_z': target_z_val,
+                    'label': label
+                })
+                
+                simulation_count += 1
+                print(f"Progress: {simulation_count}/{total_simulations} - {label} (Survey {survey_idx}, Model {model_idx})")
 
-        decays, time = [],[]
-        time.append(time_channels)
-        for i in range(len(simulations)):
-            if i == 0:
-                dpred = simulations[i].dpred(m=models[0]["model"])
-            else:
-                dpred = simulations[i].dpred(m=models[1]["model"])
-            dpred = np.reshape(dpred, (1, len(time_channels)))
-            decays.append(-dpred[0, :])
+        # Permutations with target-absent models
+        print("\n=== Target-Absent Permutations ===")
+        for survey_idx in range(len(surveys_list)):
+            for model_idx in range(self.decays_target_present, len(models_list)):
+                simulation = tdem.simulation.Simulation3DMagneticFluxDensity(
+                    mesh, 
+                    survey=surveys_list[survey_idx]['survey'], 
+                    sigmaMap=models_list[model_idx]["model_map"], 
+                    t0=self.cfg.simulation_t0
+                )
+                simulation.time_steps = self.cfg.time_steps
+                
+                dpred = simulation.dpred(m=models_list[model_idx]["model"])
+                dpred = np.reshape(dpred, (1, len(time_channels)))
+                
+                # Generate label: L<loop_z>-T- (no target)
+                loop_z_val = surveys_list[survey_idx]['loop_z']
+                label = f"L{loop_z_val:.2f}-T-"
+                
+                target_absent_times.append(time_channels)
+                target_absent_decays.append(-dpred[0, :])
+                target_absent_metadata.append({
+                    'survey_idx': survey_idx,
+                    'model_idx': model_idx,
+                    'loop_z': loop_z_val,
+                    'target_z': None,  # No target in these models
+                    'label': label
+                })
+                
+                simulation_count += 1
+                print(f"Progress: {simulation_count}/{total_simulations} - {label} (Survey {survey_idx}, Model {model_idx})")
+
+        # 7. Prepare plotting info
+        print("\n=== Preparing Plotting Information ===")
+        # Create reference models for plotting
+        active_area_z = self.cfg.separation_z
+        ind_active = mesh.cell_centers[:, 2] < active_area_z
         
-        # Prepare plotting info
+        # Model without target
+        model_no_target = self.cfg.air_conductivity * np.ones(ind_active.sum())
+        r = mesh.cell_centers[ind_active, 0]
+        z = mesh.cell_centers[ind_active, 2]
+        ind_soil = (z < 0)
+        model_no_target[ind_soil] = self.cfg.soil_conductivity
+        
+        # Model with target (use first model from list)
+        model_with_target = models_list[0]["model"] if len(models_list) > 0 else model_no_target
+        
         plotting_info = {
             'mesh': mesh,
-            'model_with_target': models[1]["model"],
-            'model_no_target': models[0]["model"],
-            'ind_active': mesh.cell_centers[:, 2] < (self.cfg.target_z + self.cfg.target_height/2),
+            'model_with_target': model_with_target,
+            'model_no_target': model_no_target,
+            'ind_active': ind_active,
             'cfg': self.cfg,
-            'loop_z_start': self.loop_z_start,
-            'loop_z_increment': self.loop_z_increment,
-            'num_increments': self.num_increments
+            'target_z_example': models_list[0]["target_z"] if len(models_list) > 0 else None,
+            'loop_z_example': surveys_list[0]['loop_z'],
+            'num_target_present': self.decays_target_present,
+            'num_target_absent': self.decays_target_absent,
+            # Legacy fields for PiPlotter compatibility
+            'loop_z_start': self.loop_z[0],
+            'loop_z_increment': (self.loop_z[1] - self.loop_z[0]) / max(1, self.decays_target_present + self.decays_target_absent - 1),
+            'num_increments': self.decays_target_present + self.decays_target_absent - 1,
+            # New fields for permutation tracking
+            'surveys_list': surveys_list,
+            'models_list': models_list,
+            'target_present_metadata': target_present_metadata,
+            'target_absent_metadata': target_absent_metadata
         }
         
-        return time, decays, plotting_info
+        print("\n=== Simulation Complete ===")
+        print(f"Generated {len(target_present_decays)} target-present decay curves")
+        print(f"Generated {len(target_absent_decays)} target-absent decay curves")
+        print(f"Total permutations: {len(target_present_decays) + len(target_absent_decays)}")
+        
+        return target_present_times, target_present_decays, target_absent_times, target_absent_decays, plotting_info
 
 class PiConditioner:
     def __init__(self):
@@ -231,40 +347,37 @@ class PiConditioner:
     def quantize(self, data, depth, dtype):
         return (np.round(data * 2**depth)).astype(dtype)
 
+
 cfg = PiConfig('config.json')
-simulator = PiSimulator(cfg, loop_z_start=cfg.tx_z, loop_z_increment=0.1, num_increments=2)
+# Define ranges for randomization: loop_z = [min, max], target_z = [min, max]
+simulator = PiSimulator(
+    cfg, 
+    loop_z=[0.3, 0.5],      # Loop height range (must be >= separation_z = 0.3)
+    target_z=[-0.5, -0.3],  # Target depth range (must be <= -separation_z = -0.3)
+    decays_target_present=2,   # Reduced for testing
+    decays_target_absent=2     # Reduced for testing
+)
 conditioner = PiConditioner()
 
-time, unconditioned_data, plotting_info = simulator.run()
+target_present_times, target_present_decays, target_absent_times, target_absent_decays, plotting_info = simulator.run()
 plotter = PiPlotter(
     plotting_info,
-    plot_linear=True,      # TDEM response linear scale
-    plot_loglog=True,      # TDEM response log-log scale
-    plot_side_view=True,   # Environment side view (X-Z plane)
-    plot_top_view=True,    # Environment top view (X-Y plane)
-    plot_3d=True           # 3D environment model
+    plot_linear=True,
+    plot_loglog=True,
+    plot_side_view=True,
+    plot_top_view=True,
+    plot_3d=True,
+    plot_combined=True  # Enable the new combined plot
 )
 
-plotter.update_times_data(time, unconditioned_data, label='unconditioned', replace=True)
+print("\n=== Updating Plotter ===")
+# Add each permutation individually with its unique label
+for i, (time, decay) in enumerate(zip(target_present_times, target_present_decays)):
+    label = plotting_info['target_present_metadata'][i]['label']
+    plotter.update_times_data([time], [decay], label=label, replace=False)
 
-
-data_noise_free = []
-for decay in unconditioned_data:
-    processed = conditioner.amplify(time, decay, time_gain=[[1e-5,10]])
-    processed = conditioner.normalize(processed, 0.7)
-    processed = conditioner.quantize(processed, depth=8, dtype=np.uint8)
-    data_noise_free.append(processed)
-
-plotter.update_times_data(time, data_noise_free, label='noise_free', replace=False)
-
-data_noise_10db = []
-for decay in unconditioned_data:
-    noisy = conditioner.add_noise(time, decay, late_time=10e-6, snr_db=10)
-    noisy = conditioner.amplify(time, noisy, time_gain=[[50e-6,10]])
-    noisy = conditioner.normalize(noisy, 0.7)
-    noisy = conditioner.quantize(noisy, depth=8, dtype=np.uint8)
-    data_noise_10db.append(noisy)
-
-plotter.update_times_data(time, data_noise_10db, label='noisy', replace=True)
+for i, (time, decay) in enumerate(zip(target_absent_times, target_absent_decays)):
+    label = plotting_info['target_absent_metadata'][i]['label']
+    plotter.update_times_data([time], [decay], label=label, replace=False)
 
 plotter.show_plots()

@@ -4,8 +4,8 @@ from mpl_toolkits.mplot3d import Axes3D
 from simpeg import maps
 
 class PiPlotter:
-    def __init__(self, plotting_info, plot_linear=False, plot_loglog=False, 
-                 plot_side_view=False, plot_top_view=False, plot_3d=False):
+    def __init__(self, plotting_info, plot_linear=True, plot_loglog=True, 
+                 plot_side_view=True, plot_top_view=True, plot_3d=True, plot_combined=True):
         """
         Initialize plotter with simulation info and plot selection flags.
         
@@ -23,6 +23,8 @@ class PiPlotter:
             Plot environment from top view (X-Y plane)
         plot_3d : bool
             Plot 3D model of entire environment
+        plot_combined : bool
+            Plot combined model+survey with decay curves
         """
         self.mesh = plotting_info['mesh']
         self.model = plotting_info['model_with_target']
@@ -33,12 +35,19 @@ class PiPlotter:
         self.loop_z_increment = plotting_info['loop_z_increment']
         self.num_increments = plotting_info['num_increments']
         
+        # New fields for permutation tracking
+        self.surveys_list = plotting_info.get('surveys_list', [])
+        self.models_list = plotting_info.get('models_list', [])
+        self.target_present_metadata = plotting_info.get('target_present_metadata', [])
+        self.target_absent_metadata = plotting_info.get('target_absent_metadata', [])
+        
         # Plot selection flags
         self.enable_linear = plot_linear
         self.enable_loglog = plot_loglog
         self.enable_side_view = plot_side_view
         self.enable_top_view = plot_top_view
         self.enable_3d = plot_3d
+        self.enable_combined = plot_combined
         
         # Data for TDEM plots - now supports multiple labeled datasets
         self.datasets = []  # List of dicts with 'label', 'times', 'decays'
@@ -142,15 +151,17 @@ class PiPlotter:
             print("No TDEM data available. Use update_times_data() first.")
             return
         
-        colors, labels = self._get_colors_labels()
-        
         fig = plt.figure(figsize=(10, 6))
         ax = fig.add_subplot(111)
         
-        color_idx = 0
-        for dataset in self.datasets:
+        # Use viridis colormap for distinct colors
+        num_datasets = len(self.datasets)
+        colors = plt.cm.viridis(np.linspace(0, 1, num_datasets))
+        
+        for dataset_idx, dataset in enumerate(self.datasets):
             times = dataset['times']
             decays = dataset['decays']
+            label = dataset['label']  # Use the unique label
             
             # Handle time as list or array
             if isinstance(times, list):
@@ -159,9 +170,8 @@ class PiPlotter:
                 time = times * 1e6
             
             for decay in decays:
-                ax.plot(time, decay, marker='x', markersize=3, color=colors[color_idx], 
-                        label=labels[color_idx], linewidth=2, alpha=0.8)
-                color_idx += 1
+                ax.plot(time, decay, marker='x', markersize=3, color=colors[dataset_idx], 
+                        label=label, linewidth=2, alpha=0.8)
         
         ax.set_xlabel("Time [μs]", fontsize=12)
         ax.set_ylabel("-dBz/dt [T/s]", fontsize=12)
@@ -186,18 +196,20 @@ class PiPlotter:
             print("No TDEM data available. Use update_times_data() first.")
             return
         
-        colors, labels = self._get_colors_labels()
-        
         fig = plt.figure(figsize=(10, 6))
         ax = fig.add_subplot(111)
         
-        color_idx = 0
         min_time = float('inf')
         max_time = 0
         
-        for dataset in self.datasets:
+        # Use viridis colormap for distinct colors
+        num_datasets = len(self.datasets)
+        colors = plt.cm.viridis(np.linspace(0, 1, num_datasets))
+        
+        for dataset_idx, dataset in enumerate(self.datasets):
             times = dataset['times']
             decays = dataset['decays']
+            label = dataset['label']  # Use the unique label
             
             # Handle time as list or array
             if isinstance(times, list):
@@ -209,9 +221,8 @@ class PiPlotter:
             max_time = max(max_time, time.max())
             
             for decay in decays:
-                ax.loglog(time, decay, marker='x', markersize=3, color=colors[color_idx], 
-                          label=labels[color_idx], linewidth=2, alpha=0.8)
-                color_idx += 1
+                ax.loglog(time, decay, marker='x', markersize=3, color=colors[dataset_idx], 
+                          label=label, linewidth=2, alpha=0.8)
         
         ax.set_xlabel("Time [μs]", fontsize=12)
         ax.set_ylabel("-dBz/dt [T/s]", fontsize=12)
@@ -409,6 +420,185 @@ class PiPlotter:
         plt.tight_layout()
         plt.show()
     
+    def plot_combined_view(self):
+        """
+        Plot TDEM Log-Log + Side View: side view of model+survey alongside log-log decay plot.
+        Shows pairwise correspondence between physical configuration and generated data.
+        User selects which permutations to plot, all displayed together in two plots.
+        """
+        if not self.datasets:
+            print("No TDEM data available. Use update_times_data() first.")
+            return
+        
+        if len(self.datasets) == 0:
+            print("No data to plot.")
+            return
+        
+        # Collect all metadata for label-based lookup
+        all_metadata = {}
+        for meta in self.target_present_metadata:
+            all_metadata[meta['label']] = meta
+        for meta in self.target_absent_metadata:
+            all_metadata[meta['label']] = meta
+        
+        # Interactive selection of permutations
+        print("\n" + "="*70)
+        print("TDEM Log-Log + Side View: Select Permutations to Plot")
+        print("="*70)
+        print("\nAvailable permutations:")
+        
+        available_labels = []
+        for idx, dataset in enumerate(self.datasets):
+            label = dataset['label']
+            available_labels.append(label)
+            if label in all_metadata:
+                metadata = all_metadata[label]
+                loop_z = metadata['loop_z']
+                target_z = metadata.get('target_z', None)
+                if target_z is not None:
+                    print(f"  [{idx+1}] {label} (Loop @ {loop_z:.3f}m, Target @ {target_z:.3f}m)")
+                else:
+                    print(f"  [{idx+1}] {label} (Loop @ {loop_z:.3f}m, No Target)")
+            else:
+                print(f"  [{idx+1}] {label}")
+        
+        print("\nEnter the numbers of permutations to plot (comma-separated, e.g., '1,3,5')")
+        print("Or enter 'all' to plot all permutations (max 8)")
+        print("Or enter 'q' to cancel")
+        
+        user_input = input("Your selection: ").strip()
+        
+        if user_input.lower() == 'q':
+            print("Plot cancelled.")
+            return
+        
+        selected_indices = []
+        if user_input.lower() == 'all':
+            selected_indices = list(range(min(8, len(self.datasets))))
+        else:
+            try:
+                # Parse comma-separated numbers
+                parts = [p.strip() for p in user_input.split(',')]
+                for part in parts:
+                    idx = int(part) - 1  # Convert to 0-based index
+                    if 0 <= idx < len(self.datasets):
+                        selected_indices.append(idx)
+                    else:
+                        print(f"Warning: Index {part} is out of range, skipping.")
+            except ValueError:
+                print("Invalid input format. Please enter numbers separated by commas.")
+                return
+        
+        if not selected_indices:
+            print("No valid permutations selected.")
+            return
+        
+        print(f"\nPlotting {len(selected_indices)} permutation(s)...")
+        
+        # Collect selected datasets
+        selected_datasets = [self.datasets[i] for i in selected_indices]
+        
+        # Create figure with two subplots side by side (equal size)
+        fig, (ax_model, ax_decay) = plt.subplots(1, 2, figsize=(18, 8))
+        
+        # Get cell centers for plotting
+        r = self.mesh.cell_centers[self.ind_active, 0]
+        z = self.mesh.cell_centers[self.ind_active, 2]
+        
+        # --- Left: Side View (All Selected Configurations) ---
+        ax_model.set_title('Physical Configurations (Side View)', fontsize=14, fontweight='bold')
+        ax_model.set_aspect('equal')
+        
+        # Plot soil layer once
+        model_example = self.models_list[0]['model'] if len(self.models_list) > 0 else self.model
+        ind_soil = (model_example >= 1e-4) & (model_example < 1e5)
+        if ind_soil.sum() > 0:
+            ax_model.scatter(r[ind_soil][::20], z[ind_soil][::20], c='brown', s=1, alpha=0.3, label='Soil')
+        
+        # Ground level
+        ax_model.axhline(0, color='green', linewidth=2, linestyle='--', alpha=0.5, label='Ground Level')
+        
+        # Use colormap for different permutations
+        colors = plt.cm.tab10(np.linspace(0, 1, len(selected_datasets)))
+        
+        min_z = 0
+        max_z = 0
+        
+        for idx, dataset in enumerate(selected_datasets):
+            label = dataset['label']
+            
+            if label in all_metadata:
+                metadata = all_metadata[label]
+                loop_z = metadata['loop_z']
+                target_z = metadata.get('target_z', None)
+                model_idx = metadata['model_idx']
+                has_target = (target_z is not None)
+            else:
+                continue
+            
+            color = colors[idx]
+            
+            # Draw loop
+            loop_radius = float(self.cfg.tx_radius)
+            ax_model.plot([0, loop_radius], [loop_z, loop_z], '-', linewidth=3, 
+                         marker='o', markersize=8, color=color, label=f'Loop: {label}')
+            
+            max_z = max(max_z, loop_z)
+            
+            # Draw target if present
+            if has_target and target_z is not None:
+                target_r = float(self.cfg.target_radius)
+                target_h = float(self.cfg.target_height)
+                z_bot = target_z - target_h/2
+                z_top = target_z + target_h/2
+                
+                # Draw target cylinder outline
+                rect = plt.Rectangle((0, z_bot), target_r, target_h, 
+                                    fill=True, facecolor=color, alpha=0.3,
+                                    edgecolor=color, linewidth=2.5, linestyle='-')
+                ax_model.add_patch(rect)
+                
+                # Add target label
+                ax_model.text(target_r + 0.02, target_z, f'Target: {label}', 
+                            fontsize=8, color=color, va='center')
+                
+                min_z = min(min_z, z_bot - 0.1)
+        
+        ax_model.set_xlabel('Radial Distance [m]', fontsize=12)
+        ax_model.set_ylabel('Elevation [m]', fontsize=12)
+        ax_model.legend(loc='best', fontsize=9, ncol=1)
+        ax_model.grid(True, alpha=0.3)
+        ax_model.set_xlim([0, loop_radius * 1.3])
+        ax_model.set_ylim([min_z, max_z + 0.2])
+        
+        # --- Right: Log-Log Decay Curves (All Selected) ---
+        ax_decay.set_title('TDEM Response (Log-Log)', fontsize=14, fontweight='bold')
+        
+        for idx, dataset in enumerate(selected_datasets):
+            times = dataset['times']
+            decays = dataset['decays']
+            label = dataset['label']
+            color = colors[idx]
+            
+            # Handle time as list or array
+            if isinstance(times, list):
+                time = times[0] * 1e6 if len(times) > 0 else times * 1e6
+            else:
+                time = times * 1e6
+            
+            # Plot the decay curve
+            for decay in decays:
+                ax_decay.loglog(time, decay, marker='x', markersize=4, 
+                               linewidth=2.5, alpha=0.9, label=label, color=color)
+        
+        ax_decay.set_xlabel("Time [μs]", fontsize=12)
+        ax_decay.set_ylabel("-dBz/dt [T/s]", fontsize=12)
+        ax_decay.grid(True, alpha=0.3, which='both')
+        ax_decay.legend(loc='best', fontsize=10)
+        
+        plt.tight_layout()
+        plt.show()
+    
     def show_plots(self):
         """
         Interactively show plots with user selection.
@@ -427,6 +617,8 @@ class PiPlotter:
             available_plots['4'] = ('Side View', self.plot_side_view)
         if self.enable_top_view:
             available_plots['5'] = ('Top View', self.plot_top_view)
+        if self.enable_combined:
+            available_plots['6'] = ('TDEM Log-Log + Side View', self.plot_combined_view)
         
         if not available_plots:
             print("No plots enabled.")

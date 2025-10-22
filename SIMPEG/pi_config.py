@@ -67,6 +67,9 @@ class PiConfig:
         self.rx_radius = self._config_data.get('rx_radius', 0.4)
         self.rx_n_turns = self._config_data.get('rx_n_turns', 30)
         
+        # Separation distance (minimum distance between loop and target)
+        self.separation_z = self._config_data.get('separation_z', 0.3)
+        
         # Target configuration
         self.target_x = self._config_data.get('target_x', 0.0)
         self.target_y = self._config_data.get('target_y', 0.0)
@@ -213,6 +216,9 @@ class PiConfig:
             "Receiver Configuration:",
             f"  Number of receivers: {self.rx_num}",
             f"  Position (x, y, z): ({self.rx_x}, {self.rx_y}, {self.rx_z}) m",
+            "",
+            "Separation Configuration:",
+            f"  Minimum separation (z-axis): {self.separation_z} m",
             "",
             "Target Configuration:",
             f"  Center (x, y, z): ({self.target_x}, {self.target_y}, {self.target_z}) m",

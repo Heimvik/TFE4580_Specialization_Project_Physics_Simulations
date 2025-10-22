@@ -13,6 +13,8 @@
     "rx_z": 0.2,
     "rx_radius": 0.4,
     "rx_n_turns": 30,
+
+    "separation_z": 0.3,
     
     "target_x": 0.0,
     "target_y": 0.0,
