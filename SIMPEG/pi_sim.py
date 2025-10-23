@@ -161,7 +161,7 @@ class PiSimulator:
         # Target-present models are in indices 0 to decays_target_present-1
         # Target-absent models are in indices decays_target_present to end
         
-        print("\n=== Running ALL Permutations (Surveys × Models) ===")
+        print("\n=== Running ALL Permutations (Surveys x Models) ===")
         print(f"Total surveys: {len(surveys_list)}")
         print(f"Target-present models: {self.decays_target_present}")
         print(f"Target-absent models: {self.decays_target_absent}")
@@ -352,8 +352,8 @@ cfg = PiConfig('config.json')
 # Define ranges for randomization: loop_z = [min, max], target_z = [min, max]
 simulator = PiSimulator(
     cfg, 
-    loop_z=[0.3, 0.5],      # Loop height range (must be >= separation_z = 0.3)
-    target_z=[-0.5, -0.3],  # Target depth range (must be <= -separation_z = -0.3)
+    loop_z=[0.3, 0.6],      # Loop height range (must be >= separation_z = 0.3)
+    target_z=[0.3, 0],      # Target depth range (must be <= -separation_z = -0.3)
     decays_target_present=40,   # Reduced for testing
     decays_target_absent=40     # Reduced for testing
 )
