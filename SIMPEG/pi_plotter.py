@@ -1,64 +1,63 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
-from mpl_toolkits.mplot3d import Axes3D
 from simpeg import maps
 from discretize import CylindricalMesh
 import h5py
 
 class PiPlotter:
-    def __init__(self, hdf5_file, cfg):
-        """
-        Initialize plotter with HDF5 file - reconstructs models from simulation data.
-        
-        Parameters
-        ----------
-        hdf5_file : str
-            Path to HDF5 file containing simulation data
-        cfg : PiConfig
-            Configuration object
-        """
-        self.hdf5_file = hdf5_file
+    def __init__(self, cfg):
         self.cfg = cfg
+        self.hdf5_file = None
+        self.num_sims = 0
+        self.num_present = 0
+        self.num_absent = 0
+        self.simulations_metadata = []
+        self.mesh = None
+        self.ind_active = None
+        self.model_no_target = None
+        print(f"PiPlotter initialized. Use load_from_hdf5() to load data.")
+    
+    def load_from_hdf5(self, hdf5_file):
+        self.hdf5_file = hdf5_file
         
-        # Load metadata from HDF5
         with h5py.File(hdf5_file, 'r') as f:
             self.num_sims = f['metadata'].attrs['num_simulations']
             self.num_present = f['metadata'].attrs['num_target_present']
             self.num_absent = f['metadata'].attrs['num_target_absent']
-            
+        
         print(f"\n{'='*70}")
-        print(f"PiPlotter initialized from HDF5: {hdf5_file}")
+        print(f"Loading data from: {hdf5_file}")
         print(f"{'='*70}")
         print(f"Total simulations: {self.num_sims}")
         print(f"  - Target present: {self.num_present}")
         print(f"  - Target absent: {self.num_absent}")
         
-        # Reconstruct mesh (same for all simulations)
         hr = [(0.01, 15), (0.01, 15, 1.3), (0.05, 10, 1.5)]
         hphi = 1
         hz = [(0.01, 10, -1.3), (0.01, 30), (0.01, 10, 1.3)]
         self.mesh = CylindricalMesh([hr, hphi, hz], x0="00C")
         
-        # Active cells
-        active_area_z = cfg.separation_z
+        active_area_z = self.cfg.separation_z
         self.ind_active = self.mesh.cell_centers[:, 2] < active_area_z
         
-        # Base model (soil only, no target)
         r = self.mesh.cell_centers[self.ind_active, 0]
         z = self.mesh.cell_centers[self.ind_active, 2]
-        self.model_no_target = cfg.air_conductivity * np.ones(self.ind_active.sum())
+        self.model_no_target = self.cfg.air_conductivity * np.ones(self.ind_active.sum())
         ind_soil = (z < 0)
-        self.model_no_target[ind_soil] = cfg.soil_conductivity
+        self.model_no_target[ind_soil] = self.cfg.soil_conductivity
         
-        # Simulation metadata storage
         self.simulations_metadata = []
         
-        # Load all simulation metadata
         self._load_metadata()
+        
+        print(f"✓ Data loaded successfully.\n")
     
     def _load_metadata(self):
-        """Load metadata for all simulations from HDF5."""
+        if self.hdf5_file is None:
+            print("Error: No HDF5 file loaded. Use load_from_hdf5() first.")
+            return
+        
         with h5py.File(self.hdf5_file, 'r') as f:
             for i in range(self.num_sims):
                 sim_group = f[f'simulations/simulation_{i}']
@@ -71,32 +70,18 @@ class PiPlotter:
                     'time': sim_group['time'][:],
                     'decay': sim_group['decay'][:]
                 }
+                if metadata['target_z'] == -999.0:
+                    metadata['target_z'] = None
                 self.simulations_metadata.append(metadata)
     
     def _reconstruct_model(self, target_z, target_present):
-        """
-        Reconstruct conductivity model from target parameters.
-        
-        Parameters
-        ----------
-        target_z : float
-            Target center depth
-        target_present : bool
-            Whether target is present
-        
-        Returns
-        -------
-        model : ndarray
-            Conductivity model
-        """
+
         r = self.mesh.cell_centers[self.ind_active, 0]
         z = self.mesh.cell_centers[self.ind_active, 2]
         
-        # Start with base model (air + soil)
         model = self.model_no_target.copy()
         
         if target_present and target_z is not None:
-            # Add target
             inner_radius = self.cfg.target_radius - self.cfg.target_thickness
             if inner_radius < 0:
                 inner_radius = 0
@@ -132,556 +117,21 @@ class PiPlotter:
         
         return model
 
-    def update_times_data(self, times, decays, label='unconditioned', replace=True):
-        """
-        Update times and decays data for TDEM plotting.
-        
-        Parameters
-        ----------
-        times : array or list
-            Time array(s) for the data
-        decays : list of arrays
-            List of decay curves
-        label : str
-            Label for this dataset (e.g., 'unconditioned', 'noise_free', 'noisy')
-            Different labels will be plotted in different colors
-        replace : bool
-            If True, replace all existing data. If False, append to existing datasets.
-        """
-        if replace:
-            self.datasets = []
-        
-        # Store the dataset with its label
-        self.datasets.append({
-            'label': label,
-            'times': times,
-            'decays': decays
-        })
-
-    def _get_color_for_label(self, label):
-        """Get the base color name for a given label."""
-        if label in self.color_palettes:
-            return self.color_palettes[label]['base']
-        return self.color_palettes['default']['base']
-    
-    def _generate_color_shade(self, base_color, norm_value):
-        """
-        Generate a shade of the base color based on normalized value (0 to 1).
-        Dark shade for norm_value=0, light shade for norm_value=1.
-        """
-        color_schemes = {
-            'blue': lambda n: (0.1 + n * 0.5, 0.2 + n * 0.5, 0.8 + n * 0.2),
-            'green': lambda n: (0.1 + n * 0.3, 0.6 + n * 0.3, 0.1 + n * 0.3),
-            'orange': lambda n: (0.9 + n * 0.1, 0.4 + n * 0.4, 0.1 + n * 0.2),
-            'purple': lambda n: (0.5 + n * 0.3, 0.1 + n * 0.3, 0.7 + n * 0.2),
-            'cyan': lambda n: (0.1 + n * 0.3, 0.7 + n * 0.2, 0.8 + n * 0.2),
-            'gray': lambda n: (0.3 + n * 0.5, 0.3 + n * 0.5, 0.3 + n * 0.5)
-        }
-        
-        if base_color in color_schemes:
-            return color_schemes[base_color](norm_value)
-        else:
-            return color_schemes['gray'](norm_value)
-    
-    def _get_colors_labels(self):
-        """Generate colors and labels for all decay curves across all datasets."""
-        colors = []
-        labels = []
-        
-        for dataset in self.datasets:
-            label_name = dataset['label']
-            decays = dataset['decays']
-            base_color = self._get_color_for_label(label_name)
-            
-            # First decay is always "no target" in red
-            colors.append('red')
-            labels.append(f'No target [{label_name}] (loop @ {float(self.loop_z_start):.2f}m)')
-            
-            # Remaining decays are "with target" in gradient colors
-            num_with_target = len(decays) - 1
-            if num_with_target > 0:
-                for i in range(num_with_target):
-                    loop_z = self.loop_z_start + i * self.loop_z_increment
-                    distance_from_target = abs(loop_z - float(self.cfg.target_z))
-                    
-                    if num_with_target > 1:
-                        norm_dist = i / (num_with_target - 1)
-                    else:
-                        norm_dist = 0.5
-                    
-                    color = self._generate_color_shade(base_color, norm_dist)
-                    colors.append(color)
-                    labels.append(f'With target [{label_name}] (loop @ {loop_z:.2f}m, dist={distance_from_target:.2f}m)')
-        
-        return colors, labels
-    
-    def plot_tdem_linear(self):
-        """Plot TDEM response on linear scale."""
-        if not self.datasets:
-            print("No TDEM data available. Use update_times_data() first.")
+    def run(self):
+        if self.hdf5_file is None:
+            print("Error: No data loaded. Use load_from_hdf5() first.")
             return
         
-        fig = plt.figure(figsize=(10, 6))
-        ax = fig.add_subplot(111)
-        
-        # Use viridis colormap for distinct colors
-        num_datasets = len(self.datasets)
-        colors = plt.cm.viridis(np.linspace(0, 1, num_datasets))
-        
-        for dataset_idx, dataset in enumerate(self.datasets):
-            times = dataset['times']
-            decays = dataset['decays']
-            label = dataset['label']  # Use the unique label
-            
-            # Handle time as list or array
-            if isinstance(times, list):
-                time = times[0] * 1e6  # Convert to μs
-            else:
-                time = times * 1e6
-            
-            for decay in decays:
-                ax.plot(time, decay, marker='x', markersize=3, color=colors[dataset_idx], 
-                        label=label, linewidth=2, alpha=0.8)
-        
-        ax.set_xlabel("Time [μs]", fontsize=12)
-        ax.set_ylabel("-dBz/dt [T/s]", fontsize=12)
-        ax.set_title("TDEM Decay Curve (Linear Scale)", fontsize=14, fontweight='bold')
-        ax.grid(True, alpha=0.3)
-        
-        # Get max time from all datasets
-        if isinstance(self.datasets[0]['times'], list):
-            max_time = self.datasets[0]['times'][0].max() * 1e6
-        else:
-            max_time = self.datasets[0]['times'].max() * 1e6
-        ax.set_xlim((0, max_time))
-        
-        ax.legend(loc='best', fontsize=9)
-        
-        plt.tight_layout()
-        plt.show()
-    
-    def plot_tdem_loglog(self):
-        """Plot TDEM response on log-log scale."""
-        if not self.datasets:
-            print("No TDEM data available. Use update_times_data() first.")
-            return
-        
-        fig = plt.figure(figsize=(10, 6))
-        ax = fig.add_subplot(111)
-        
-        min_time = float('inf')
-        max_time = 0
-        
-        # Use viridis colormap for distinct colors
-        num_datasets = len(self.datasets)
-        colors = plt.cm.viridis(np.linspace(0, 1, num_datasets))
-        
-        for dataset_idx, dataset in enumerate(self.datasets):
-            times = dataset['times']
-            decays = dataset['decays']
-            label = dataset['label']  # Use the unique label
-            
-            # Handle time as list or array
-            if isinstance(times, list):
-                time = times[0] * 1e6  # Convert to μs
-            else:
-                time = times * 1e6
-            
-            min_time = min(min_time, time.min())
-            max_time = max(max_time, time.max())
-            
-            for decay in decays:
-                ax.loglog(time, decay, marker='x', markersize=3, color=colors[dataset_idx], 
-                          label=label, linewidth=2, alpha=0.8)
-        
-        ax.set_xlabel("Time [μs]", fontsize=12)
-        ax.set_ylabel("-dBz/dt [T/s]", fontsize=12)
-        ax.set_title("TDEM Decay Curve (Log-Log Scale)", fontsize=14, fontweight='bold')
-        ax.grid(True, alpha=0.3, which='both')
-        
-        # Set xlim only if min is positive for log scale
-        if min_time > 0:
-            ax.set_xlim((min_time, max_time))
-        
-        ax.legend(loc='best', fontsize=9)
-        
-        plt.tight_layout()
-        plt.show()
-    
-    def plot_3d_view(self):
-        """Plot 3D environment view (optimized for performance)."""
-        fig = plt.figure(figsize=(12, 10))
-        ax = fig.add_subplot(111, projection='3d')
-        ax.set_title('3D Environment View', fontsize=14, fontweight='bold')
-        
-        # Get cell centers
-        r = self.mesh.cell_centers[self.ind_active, 0]
-        z = self.mesh.cell_centers[self.ind_active, 2]
-        
-        # Use fewer theta points for performance
-        n_theta = 12  # Reduced from 36
-        theta = np.linspace(0, 2*np.pi, n_theta)
-        
-        # Separate cells by conductivity type with better thresholds
-        ind_air = self.model < 1e-4
-        ind_soil = (self.model >= 1e-4) & (self.model < 1e5)
-        ind_aluminum = self.model >= 1e5
-        
-        # Plot soil cells (brown) - much more sparse sampling
-        if ind_soil.sum() > 0:
-            soil_indices = np.where(ind_soil)[0][::10]  # Sample every 10th cell
-            for i in soil_indices:
-                ri, zi = r[i], z[i]
-                # Plot only a few points around circumference
-                for tj in range(0, n_theta, 3):
-                    xi = ri * np.cos(theta[tj])
-                    yi = ri * np.sin(theta[tj])
-                    ax.scatter(xi, yi, zi, c='saddlebrown', s=5, alpha=0.4, marker='.')
-        
-        # Plot aluminum target cells (silver/gray) - optimized
-        if ind_aluminum.sum() > 0:
-            al_indices = np.where(ind_aluminum)[0]
-            for i in al_indices[::2]:  # Every other aluminum cell
-                ri, zi = r[i], z[i]
-                for tj in theta:
-                    xi = ri * np.cos(tj)
-                    yi = ri * np.sin(tj)
-                    ax.scatter(xi, yi, zi, c='silver', s=15, alpha=0.8, marker='o', 
-                             edgecolors='black', linewidths=0.3)
-        
-        # Plot transmitter/receiver loops
-        loop_radius = float(self.cfg.tx_radius)
-        for i in range(self.num_increments + 2):
-            loop_z = self.loop_z_start + i * self.loop_z_increment
-            loop_theta = np.linspace(0, 2*np.pi, 100)
-            loop_x = loop_radius * np.cos(loop_theta)
-            loop_y = loop_radius * np.sin(loop_theta)
-            loop_z_arr = np.full_like(loop_x, loop_z)
-            
-            if i == 0:
-                ax.plot(loop_x, loop_y, loop_z_arr, 'r-', linewidth=3, 
-                       label=f'Loop (no tgt) @ z={loop_z:.2f}m')
-            else:
-                norm_i = (i-1) / max(1, self.num_increments)
-                color = (0.1 + norm_i*0.5, 0.2 + norm_i*0.5, 0.8 + norm_i*0.2)
-                ax.plot(loop_x, loop_y, loop_z_arr, color=color, linewidth=2.5, 
-                       label=f'Loop (w/ tgt) @ z={loop_z:.2f}m')
-        
-        # Plot target cylinder outline
-        target_z = float(self.cfg.target_z)
-        target_r = float(self.cfg.target_radius)
-        target_h = float(self.cfg.target_height)
-        z_top = target_z + target_h/2
-        z_bot = target_z - target_h/2
-        
-        cyl_theta = np.linspace(0, 2*np.pi, 50)
-        cyl_x = target_r * np.cos(cyl_theta)
-        cyl_y = target_r * np.sin(cyl_theta)
-        
-        ax.plot(cyl_x, cyl_y, np.full_like(cyl_x, z_top), 'k-', linewidth=2, label='Target boundary')
-        ax.plot(cyl_x, cyl_y, np.full_like(cyl_x, z_bot), 'k-', linewidth=2)
-        
-        for angle in [0, np.pi/2, np.pi, 3*np.pi/2]:
-            ax.plot([target_r*np.cos(angle)]*2, [target_r*np.sin(angle)]*2, 
-                   [z_bot, z_top], 'k-', linewidth=2)
-        
-        # Ground plane
-        ground_r = np.linspace(0, loop_radius*1.2, 20)
-        ground_theta = np.linspace(0, 2*np.pi, 40)
-        R, T = np.meshgrid(ground_r, ground_theta)
-        X_ground = R * np.cos(T)
-        Y_ground = R * np.sin(T)
-        Z_ground = np.zeros_like(X_ground)
-        ax.plot_surface(X_ground, Y_ground, Z_ground, alpha=0.2, color='green')
-        
-        ax.set_xlabel('X [m]', fontsize=10)
-        ax.set_ylabel('Y [m]', fontsize=10)
-        ax.set_zlabel('Z [m]', fontsize=10)
-        ax.legend(loc='upper right', fontsize=8)
-        ax.set_box_aspect([1, 1, 0.8])
-        
-        plt.tight_layout()
-        plt.show()
-    
-    def plot_side_view(self):
-        """Plot side view (X-Z plane)."""
-        fig = plt.figure(figsize=(10, 8))
-        ax = fig.add_subplot(111)
-        ax.set_title('Side View (X-Z Plane)', fontsize=14, fontweight='bold')
-        
-        # Plot conductivity zones in 2D
-        plotting_map = maps.InjectActiveCells(self.mesh, self.ind_active, np.nan)
-        log_model = np.log10(self.model)
-        self.mesh.plot_image(plotting_map * log_model, ax=ax, grid=True,
-                           clim=(np.log10(self.cfg.air_conductivity), 
-                                np.log10(self.cfg.aluminum_conductivity)))
-        
-        # Target parameters
-        target_z = float(self.cfg.target_z)
-        target_r = float(self.cfg.target_radius)
-        target_h = float(self.cfg.target_height)
-        z_top = target_z + target_h/2
-        z_bot = target_z - target_h/2
-        loop_radius = float(self.cfg.tx_radius)
-        
-        # Overlay features
-        ax.axhline(y=0, color='green', linestyle='--', linewidth=2, alpha=0.7, label='Ground surface')
-        ax.axhline(y=target_z, color='red', linestyle=':', linewidth=1.5, alpha=0.7, label='Target center')
-        
-        # Draw target rectangle
-        ax.add_patch(plt.Rectangle((0, z_bot), target_r, target_h, 
-                                   fill=False, edgecolor='black', linewidth=2, linestyle='-'))
-        
-        # Draw loops
-        for i in range(self.num_increments + 2):
-            loop_z = self.loop_z_start + i * self.loop_z_increment
-            if i == 0:
-                ax.plot([0, loop_radius], [loop_z, loop_z], 'r-', linewidth=2.5, marker='o', markersize=8)
-            else:
-                norm_i = (i-1) / max(1, self.num_increments)
-                color = (0.1 + norm_i*0.5, 0.2 + norm_i*0.5, 0.8 + norm_i*0.2)
-                ax.plot([0, loop_radius], [loop_z, loop_z], color=color, linewidth=2, marker='o', markersize=6)
-        
-        ax.set_xlabel('Radial Distance [m]', fontsize=12)
-        ax.set_ylabel('Elevation [m]', fontsize=12)
-        ax.legend(loc='lower right', fontsize=9)
-        ax.grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-        plt.show()
-    
-    def plot_top_view(self):
-        """Plot top view (X-Y plane)."""
-        fig = plt.figure(figsize=(8, 8))
-        ax = fig.add_subplot(111)
-        ax.set_title('Top View (X-Y Plane)', fontsize=14, fontweight='bold')
-        ax.set_aspect('equal')
-        
-        target_r = float(self.cfg.target_radius)
-        loop_radius = float(self.cfg.tx_radius)
-        
-        # Draw loops
-        for i in range(self.num_increments + 2):
-            loop_z = self.loop_z_start + i * self.loop_z_increment
-            circle = plt.Circle((0, 0), loop_radius, fill=False, linewidth=2)
-            if i == 0:
-                circle.set_edgecolor('red')
-                circle.set_linewidth(3)
-            else:
-                norm_i = (i-1) / max(1, self.num_increments)
-                color = (0.1 + norm_i*0.5, 0.2 + norm_i*0.5, 0.8 + norm_i*0.2)
-                circle.set_edgecolor(color)
-            ax.add_patch(circle)
-        
-        # Draw target
-        target_circle = plt.Circle((0, 0), target_r, fill=True, facecolor='silver', 
-                                  edgecolor='black', linewidth=2, alpha=0.7, label='Target')
-        ax.add_patch(target_circle)
-        
-        ax.set_xlim([-loop_radius*1.3, loop_radius*1.3])
-        ax.set_ylim([-loop_radius*1.3, loop_radius*1.3])
-        ax.set_xlabel('X [m]', fontsize=12)
-        ax.set_ylabel('Y [m]', fontsize=12)
-        ax.legend(loc='upper right', fontsize=9)
-        ax.grid(True, alpha=0.3)
-        ax.axhline(0, color='k', linewidth=0.5, alpha=0.3)
-        ax.axvline(0, color='k', linewidth=0.5, alpha=0.3)
-        
-        plt.tight_layout()
-        plt.show()
-    
-    def plot_combined_view(self):
-        """
-        Plot TDEM Log-Log + Side View: side view of model+survey alongside log-log decay plot.
-        Shows pairwise correspondence between physical configuration and generated data.
-        User selects which permutations to plot, all displayed together in two plots.
-        """
-        if not self.datasets:
-            print("No TDEM data available. Use update_times_data() first.")
-            return
-        
-        if len(self.datasets) == 0:
-            print("No data to plot.")
-            return
-        
-        # Collect all metadata for label-based lookup
-        all_metadata = {}
-        for meta in self.target_present_metadata:
-            all_metadata[meta['label']] = meta
-        for meta in self.target_absent_metadata:
-            all_metadata[meta['label']] = meta
-        
-        # Interactive selection of permutations
-        print("\n" + "="*70)
-        print("TDEM Log-Log + Side View: Select Permutations to Plot")
-        print("="*70)
-        print("\nAvailable permutations:")
-        
-        available_labels = []
-        for idx, dataset in enumerate(self.datasets):
-            label = dataset['label']
-            available_labels.append(label)
-            if label in all_metadata:
-                metadata = all_metadata[label]
-                loop_z = metadata['loop_z']
-                target_z = metadata.get('target_z', None)
-                if target_z is not None:
-                    print(f"  [{idx+1}] {label} (Loop @ {loop_z:.3f}m, Target @ {target_z:.3f}m)")
-                else:
-                    print(f"  [{idx+1}] {label} (Loop @ {loop_z:.3f}m, No Target)")
-            else:
-                print(f"  [{idx+1}] {label}")
-        
-        print("\nEnter the numbers of permutations to plot (comma-separated, e.g., '1,3,5')")
-        print("Or enter 'all' to plot all permutations (max 8)")
-        print("Or enter 'q' to cancel")
-        
-        user_input = input("Your selection: ").strip()
-        
-        if user_input.lower() == 'q':
-            print("Plot cancelled.")
-            return
-        
-        selected_indices = []
-        if user_input.lower() == 'all':
-            selected_indices = list(range(min(8, len(self.datasets))))
-        else:
-            try:
-                # Parse comma-separated numbers
-                parts = [p.strip() for p in user_input.split(',')]
-                for part in parts:
-                    idx = int(part) - 1  # Convert to 0-based index
-                    if 0 <= idx < len(self.datasets):
-                        selected_indices.append(idx)
-                    else:
-                        print(f"Warning: Index {part} is out of range, skipping.")
-            except ValueError:
-                print("Invalid input format. Please enter numbers separated by commas.")
-                return
-        
-        if not selected_indices:
-            print("No valid permutations selected.")
-            return
-        
-        print(f"\nPlotting {len(selected_indices)} permutation(s)...")
-        
-        # Collect selected datasets
-        selected_datasets = [self.datasets[i] for i in selected_indices]
-        
-        # Create figure with two subplots side by side (equal size)
-        fig, (ax_model, ax_decay) = plt.subplots(1, 2, figsize=(18, 8))
-        
-        # Get cell centers for plotting
-        r = self.mesh.cell_centers[self.ind_active, 0]
-        z = self.mesh.cell_centers[self.ind_active, 2]
-        
-        # --- Left: Side View (All Selected Configurations) ---
-        ax_model.set_title('Physical Configurations (Side View)', fontsize=14, fontweight='bold')
-        ax_model.set_aspect('equal')
-        
-        # Plot soil layer once
-        model_example = self.models_list[0]['model'] if len(self.models_list) > 0 else self.model
-        ind_soil = (model_example >= 1e-4) & (model_example < 1e5)
-        if ind_soil.sum() > 0:
-            ax_model.scatter(r[ind_soil][::20], z[ind_soil][::20], c='brown', s=1, alpha=0.3, label='Soil')
-        
-        # Ground level
-        ax_model.axhline(0, color='green', linewidth=2, linestyle='--', alpha=0.5, label='Ground Level')
-        
-        # Use colormap for different permutations
-        colors = plt.cm.tab10(np.linspace(0, 1, len(selected_datasets)))
-        
-        min_z = 0
-        max_z = 0
-        
-        for idx, dataset in enumerate(selected_datasets):
-            label = dataset['label']
-            
-            if label in all_metadata:
-                metadata = all_metadata[label]
-                loop_z = metadata['loop_z']
-                target_z = metadata.get('target_z', None)
-                model_idx = metadata['model_idx']
-                has_target = (target_z is not None)
-            else:
-                continue
-            
-            color = colors[idx]
-            
-            # Draw loop
-            loop_radius = float(self.cfg.tx_radius)
-            ax_model.plot([0, loop_radius], [loop_z, loop_z], '-', linewidth=3, 
-                         marker='o', markersize=8, color=color, label=f'Loop: {label}')
-            
-            max_z = max(max_z, loop_z)
-            
-            # Draw target if present
-            if has_target and target_z is not None:
-                target_r = float(self.cfg.target_radius)
-                target_h = float(self.cfg.target_height)
-                z_bot = target_z - target_h/2
-                z_top = target_z + target_h/2
-                
-                # Draw target cylinder outline
-                rect = plt.Rectangle((0, z_bot), target_r, target_h, 
-                                    fill=True, facecolor=color, alpha=0.3,
-                                    edgecolor=color, linewidth=2.5, linestyle='-')
-                ax_model.add_patch(rect)
-                
-                # Add target label
-                ax_model.text(target_r + 0.02, target_z, f'Target: {label}', 
-                            fontsize=8, color=color, va='center')
-                
-                min_z = min(min_z, z_bot - 0.1)
-        
-        ax_model.set_xlabel('Radial Distance [m]', fontsize=12)
-        ax_model.set_ylabel('Elevation [m]', fontsize=12)
-        ax_model.legend(loc='best', fontsize=9, ncol=1)
-        ax_model.grid(True, alpha=0.3)
-        ax_model.set_xlim([0, loop_radius * 1.3])
-        ax_model.set_ylim([min_z, max_z + 0.2])
-        
-        # --- Right: Log-Log Decay Curves (All Selected) ---
-        ax_decay.set_title('TDEM Response (Log-Log)', fontsize=14, fontweight='bold')
-        
-        for idx, dataset in enumerate(selected_datasets):
-            times = dataset['times']
-            decays = dataset['decays']
-            label = dataset['label']
-            color = colors[idx]
-            
-            # Handle time as list or array
-            if isinstance(times, list):
-                time = times[0] * 1e6 if len(times) > 0 else times * 1e6
-            else:
-                time = times * 1e6
-            
-            # Plot the decay curve
-            for decay in decays:
-                ax_decay.loglog(time, decay, marker='x', markersize=4, 
-                               linewidth=2.5, alpha=0.9, label=label, color=color)
-        
-        ax_decay.set_xlabel("Time [μs]", fontsize=12)
-        ax_decay.set_ylabel("-dBz/dt [T/s]", fontsize=12)
-        ax_decay.grid(True, alpha=0.3, which='both')
-        ax_decay.legend(loc='best', fontsize=10)
-        
-        plt.tight_layout()
-        plt.show()
-    
-    def show_plots(self):
-        """
-        Interactively show plots with user selection.
-        Displays the combined view showing physical configurations and decay curves.
-        """
         print(f"\n{'='*60}")
         print("PiPlotter: HDF5-Based Visualization")
         print(f"{'='*60}")
         
         while True:
             print("\nAvailable plots:")
-            print("  [1] Combined View (Model + Decay Curves)")
+            print("  [1] Combined View (Side View + Decay Curves)")
             print("  [2] Quick Log-Log Plot (first N simulations)")
+            print("  [3] Detailed Side View (model grid + configuration)")
+            print("  [4] Detailed Top View (model grid + configuration)")
             print("  [q] Quit plotting")
             
             choice = input("\nSelect a plot to display (or 'q' to quit): ").strip().lower()
@@ -696,6 +146,12 @@ class PiPlotter:
             elif choice == '2':
                 print("\nShowing: Quick Log-Log Plot")
                 self._quick_loglog_plot()
+            elif choice == '3':
+                print("\nShowing: Detailed Side View")
+                self.plot_side_view_detailed()
+            elif choice == '4':
+                print("\nShowing: Detailed Top View")
+                self.plot_top_view_detailed()
             else:
                 print(f"Invalid choice: '{choice}'. Please select from the menu.")
         
@@ -704,7 +160,6 @@ class PiPlotter:
         print(f"{'='*60}\n")
     
     def _quick_loglog_plot(self):
-        """Quick plot of first N simulations."""
         n = int(input(f"How many simulations to plot (max {self.num_sims})? ").strip() or "5")
         n = min(n, self.num_sims)
         
@@ -722,7 +177,6 @@ class PiPlotter:
         ax.set_ylabel('|dBz/dt| [T/s]', fontsize=12)
         ax.set_title(f'TDEM Decay Curves (first {n} simulations)', fontsize=14, fontweight='bold')
         
-        # Legend
         if n <= 10:
             ax.legend(fontsize=9, ncol=2)
         else:
@@ -737,10 +191,7 @@ class PiPlotter:
         plt.show()
     
     def plot_combined_from_hdf5(self):
-        """
-        Plot side-by-side: model visualization + decay curves.
-        Shows which decay curve comes from which physical configuration.
-        """
+
         print("\n" + "="*70)
         print("Combined View: Physical Configuration + Decay Curves")
         print("="*70)
@@ -753,9 +204,8 @@ class PiPlotter:
                 print(f"  [{idx+1}] {meta['label']} (Loop @ {meta['loop_z']:.3f}m, No Target)")
         
         print("\nSelect simulations to plot:")
-        print("  - Enter numbers (comma-separated, e.g., '1,3,5')")
-        print("  - Enter 'all' for all simulations (max 8)")
-        print("  - Enter 'compare' to compare first present vs first absent")
+        print("  - Enter custom selection (comma-separated, e.g., '1,3,5')")
+        print("  - Enter 'all' for all simulations")
         print("  - Enter 'q' to cancel")
         
         user_input = input("Your selection: ").strip()
@@ -766,16 +216,7 @@ class PiPlotter:
         
         selected_indices = []
         if user_input.lower() == 'all':
-            selected_indices = list(range(min(8, self.num_sims)))
-        elif user_input.lower() == 'compare':
-            # Find first present and first absent
-            for i, meta in enumerate(self.simulations_metadata):
-                if meta['target_present'] and not any(self.simulations_metadata[j]['target_present'] for j in selected_indices):
-                    selected_indices.append(i)
-                elif not meta['target_present'] and not any(not self.simulations_metadata[j]['target_present'] for j in selected_indices):
-                    selected_indices.append(i)
-                if len(selected_indices) >= 2:
-                    break
+            selected_indices = list(range(self.num_sims))
         else:
             try:
                 parts = [p.strip() for p in user_input.split(',')]
@@ -795,92 +236,190 @@ class PiPlotter:
         
         print(f"\nPlotting {len(selected_indices)} simulation(s)...")
         
-        # Create figure with two subplots
-        fig, (ax_model, ax_decay) = plt.subplots(1, 2, figsize=(18, 8))
+        fig = plt.figure(figsize=(24, 11))
+        gs = fig.add_gridspec(1, 2, width_ratios=[1, 3], wspace=0.25)
+        ax_model = fig.add_subplot(gs[0, 0])
+        ax_decay = fig.add_subplot(gs[0, 1])
         
-        # Get cell centers
         r = self.mesh.cell_centers[self.ind_active, 0]
         z = self.mesh.cell_centers[self.ind_active, 2]
         
-        # --- Left: Side View (Physical Configurations) ---
-        ax_model.set_title('Physical Configurations (Side View)', fontsize=14, fontweight='bold')
+        ax_model.set_title('Physical Configurations (Side View)', fontsize=18, fontweight='bold', pad=15)
         ax_model.set_aspect('equal')
         
-        # Plot soil layer once (background)
-        ind_soil = (self.model_no_target >= 1e-4) & (self.model_no_target < 1e5)
-        if ind_soil.sum() > 0:
-            ax_model.scatter(r[ind_soil][::20], z[ind_soil][::20], c='saddlebrown', s=1, alpha=0.3, label='Soil')
+        ax_model.axhline(0, color='darkgreen', linewidth=2, linestyle='--', alpha=0.7, label='Ground Level')
         
-        # Ground level
-        ax_model.axhline(0, color='green', linewidth=2, linestyle='--', alpha=0.5, label='Ground Level')
-        
-        # Use colormap for different simulations
         colors = plt.cm.tab10(np.linspace(0, 1, len(selected_indices)))
         
-        # Plot each selected configuration
         for plot_idx, sim_idx in enumerate(selected_indices):
             meta = self.simulations_metadata[sim_idx]
             color = colors[plot_idx]
             
-            # Reconstruct model
-            model = self._reconstruct_model(meta['target_z'], meta['target_present'])
+            if meta['target_z'] is not None:
+                ax_model.scatter([self.cfg.target_radius/2], [meta['target_z']], 
+                               c=[color], s=150, alpha=0.9,
+                               marker='X', edgecolors='black', linewidths=2.0,
+                               label=f"T{plot_idx+1}")
             
-            # Plot target if present
-            if meta['target_present']:
-                ind_aluminum = model >= 1e5
-                if ind_aluminum.sum() > 0:
-                    ax_model.scatter(r[ind_aluminum], z[ind_aluminum], c=[color], s=15, alpha=0.8,
-                                   marker='s', edgecolors='black', linewidths=0.5,
-                                   label=f"Target: {meta['label']}")
-            
-            # Plot transmitter loop
             loop_radius = float(self.cfg.tx_radius)
-            loop_theta = np.linspace(0, 2*np.pi, 100)
-            loop_r = loop_radius * np.ones_like(loop_theta)
-            
-            # Project to 2D (side view): show as horizontal lines at loop_z
-            ax_model.plot([-loop_radius, loop_radius], [meta['loop_z'], meta['loop_z']],
-                         color=color, linewidth=3, marker='o', markersize=8,
-                         label=f"Loop: {meta['label']}")
+            ax_model.plot([0, loop_radius], [meta['loop_z'], meta['loop_z']],
+                         color=color, linewidth=4, marker='o', markersize=10,
+                         markerfacecolor=color, markeredgecolor='black', markeredgewidth=1.5,
+                         label=f"L{plot_idx+1}")
         
-        ax_model.set_xlabel('Radial Distance [m]', fontsize=12)
-        ax_model.set_ylabel('Depth [m]', fontsize=12)
-        ax_model.legend(loc='best', fontsize=8, ncol=1)
+        ax_model.set_xlabel('Radial Distance [m]', fontsize=15)
+        ax_model.set_ylabel('Depth [m]', fontsize=15)
+        ax_model.tick_params(labelsize=12)
+        
+        num_items = len(selected_indices) * 2 + 2
+        if num_items > 15:
+            ax_model.legend(loc='upper right', fontsize=7, ncol=4, framealpha=0.9, columnspacing=0.5)
+        elif num_items > 10:
+            ax_model.legend(loc='upper right', fontsize=7, ncol=3, framealpha=0.9)
+        else:
+            ax_model.legend(loc='upper right', fontsize=8, ncol=2, framealpha=0.9)
+        
         ax_model.grid(True, alpha=0.3)
+        ax_model.set_xlim([0, 0.5])
         
-        # --- Right: Decay Curves ---
-        ax_decay.set_title('TDEM Decay Curves (Log-Log)', fontsize=14, fontweight='bold')
+        ax_decay.set_title('TDEM Decay Curves (Log-Log)', fontsize=18, fontweight='bold', pad=15)
         
         for plot_idx, sim_idx in enumerate(selected_indices):
             meta = self.simulations_metadata[sim_idx]
             color = colors[plot_idx]
             
-            time_us = meta['time'] * 1e6  # Convert to microseconds
+            time_us = meta['time'] * 1e6
             decay = np.abs(meta['decay'])
             
-            ax_decay.loglog(time_us, decay, color=color, linewidth=2.5, alpha=0.8,
-                           label=meta['label'])
+            ax_decay.loglog(time_us, decay, color=color, linewidth=2.5, alpha=0.9,
+                           label=f"{plot_idx+1}: {meta['label']}", marker='.')
         
-        ax_decay.set_xlabel('Time [μs]', fontsize=12)
-        ax_decay.set_ylabel('|dBz/dt| [T/s]', fontsize=12)
-        ax_decay.legend(loc='best', fontsize=9)
+        ax_decay.set_xlabel('Time [μs]', fontsize=15)
+        ax_decay.set_ylabel('|dBz/dt| [T/s]', fontsize=15)
+        ax_decay.tick_params(labelsize=12)
+        
+        if len(selected_indices) > 15:
+            ax_decay.legend(loc='lower left', fontsize=7, ncol=2, framealpha=0.9)
+        elif len(selected_indices) > 8:
+            ax_decay.legend(loc='lower left', fontsize=8, ncol=1, framealpha=0.9)
+        else:
+            ax_decay.legend(loc='lower left', fontsize=9, framealpha=0.9)
+        
         ax_decay.grid(True, alpha=0.3, which='both')
+        
+        plt.subplots_adjust(left=0.06, right=0.98, top=0.95, bottom=0.08, wspace=0.25)
+        plt.show()
+    
+    def plot_side_view_detailed(self):
+
+        print("\n" + "="*70)
+        print("Detailed Side View: Exact Mesh & Model Configuration")
+        print("="*70)
+        print("\nSelect a simulation to visualize:")
+        
+        for idx, meta in enumerate(self.simulations_metadata):
+            if meta['target_present']:
+                print(f"  [{idx+1}] {meta['label']} (Loop @ {meta['loop_z']:.3f}m, Target @ {meta['target_z']:.3f}m)")
+            else:
+                print(f"  [{idx+1}] {meta['label']} (Loop @ {meta['loop_z']:.3f}m, No Target)")
+        
+        try:
+            choice = int(input("\nEnter simulation number: ").strip()) - 1
+            if choice < 0 or choice >= self.num_sims:
+                print("Invalid selection.")
+                return
+        except ValueError:
+            print("Invalid input.")
+            return
+        
+        meta = self.simulations_metadata[choice]
+        
+        model = self._reconstruct_model(meta['target_z'], meta['target_present'])
+        
+        fig, ax = plt.subplots(figsize=(10, 8))
+        ax.set_title(f'Side View: {meta["label"]}', fontsize=14, fontweight='bold')
+        
+        plotting_map = maps.InjectActiveCells(self.mesh, self.ind_active, np.nan)
+        log_model = np.log10(model)
+        self.mesh.plot_image(plotting_map * log_model, ax=ax, grid=True,
+                           clim=(np.log10(self.cfg.air_conductivity), 
+                                np.log10(self.cfg.aluminum_conductivity)))
+        
+        ax.axhline(y=0, color='green', linestyle='--', linewidth=2, alpha=0.7, label='Ground surface')
+        
+        loop_radius = float(self.cfg.tx_radius)
+        ax.plot([0, loop_radius], [meta['loop_z'], meta['loop_z']], 
+               color='blue', linewidth=2.5, marker='o', markersize=8,
+               label=f'TX/RX Loop (z={meta["loop_z"]:.3f}m)')
+        
+        if meta['target_present'] and meta['target_z'] is not None:
+            target_top = meta['target_z'] + self.cfg.target_height/2
+            target_bottom = meta['target_z'] - self.cfg.target_height/2
+            target_radius = self.cfg.target_radius
+            
+            ax.axhline(y=meta['target_z'], color='red', linestyle=':', linewidth=1.5, alpha=0.7, 
+                      label=f'Target center (z={meta["target_z"]:.3f}m)')
+            
+            ax.add_patch(plt.Rectangle((0, target_bottom), target_radius, self.cfg.target_height,
+                                      fill=False, edgecolor='black', linewidth=2, linestyle='-'))
+        
+        ax.set_xlabel('Radial Distance [m]', fontsize=12)
+        ax.set_ylabel('Elevation [m]', fontsize=12)
+        ax.legend(loc='lower right', fontsize=9)
+        ax.grid(True, alpha=0.3)
+        ax.set_xlim([0, None])
         
         plt.tight_layout()
         plt.show()
 
-
-def plot_from_hdf5(hdf5_file, cfg):
-    """
-    Plot from HDF5 file using PiPlotter class.
-    Creates interactive plotter that reconstructs models and shows visualizations.
-    
-    Parameters
-    ----------
-    hdf5_file : str
-        Path to HDF5 file
-    cfg : PiConfig
-        Configuration object
-    """
-    plotter = PiPlotter(hdf5_file, cfg)
-    plotter.show_plots()
+    def plot_top_view_detailed(self):
+        print("\n" + "="*70)
+        print("Detailed Top View: Exact Mesh & Model Configuration")
+        print("="*70)
+        print("\nSelect a simulation to visualize:")
+        
+        for idx, meta in enumerate(self.simulations_metadata):
+            if meta['target_present']:
+                print(f"  [{idx+1}] {meta['label']} (Loop @ {meta['loop_z']:.3f}m, Target @ {meta['target_z']:.3f}m)")
+            else:
+                print(f"  [{idx+1}] {meta['label']} (Loop @ {meta['loop_z']:.3f}m, No Target)")
+        
+        try:
+            choice = int(input("\nEnter simulation number: ").strip()) - 1
+            if choice < 0 or choice >= self.num_sims:
+                print("Invalid selection.")
+                return
+        except ValueError:
+            print("Invalid input.")
+            return
+        
+        meta = self.simulations_metadata[choice]
+        
+        fig, ax = plt.subplots(figsize=(10, 10))
+        ax.set_title(f'Top View: {meta["label"]}', fontsize=14, fontweight='bold')
+        ax.set_aspect('equal')
+        
+        target_r = float(self.cfg.target_radius)
+        loop_radius = float(self.cfg.tx_radius)
+        
+        circle = plt.Circle((0, 0), loop_radius, fill=False, linewidth=3, 
+                           edgecolor='blue', label=f'TX/RX Loop (z={meta["loop_z"]:.3f}m)')
+        ax.add_patch(circle)
+        
+        if meta['target_present'] and meta['target_z'] is not None:
+            target_circle = plt.Circle((0, 0), target_r, fill=True, facecolor='silver', 
+                                      edgecolor='black', linewidth=2, alpha=0.7, 
+                                      label=f'Target (z={meta["target_z"]:.3f}m)')
+            ax.add_patch(target_circle)
+        
+        ax.set_xlim([-loop_radius*1.3, loop_radius*1.3])
+        ax.set_ylim([-loop_radius*1.3, loop_radius*1.3])
+        ax.set_xlabel('X [m]', fontsize=12)
+        ax.set_ylabel('Y [m]', fontsize=12)
+        ax.legend(loc='upper right', fontsize=9)
+        ax.grid(True, alpha=0.3)
+        ax.axhline(0, color='k', linewidth=0.5, alpha=0.3)
+        ax.axvline(0, color='k', linewidth=0.5, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.show()

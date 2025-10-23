@@ -7,11 +7,9 @@ import simpeg.electromagnetics.time_domain as tdem
 import numpy as np
 import matplotlib as mpl
 import matplotlib.pyplot as plt
-from matplotlib.lines import Line2D
 
-
-import h5py
 from datetime import datetime
+import os
 
 from pi_config import PiConfig
 from pi_plotter import PiPlotter
@@ -22,12 +20,7 @@ class PiSimulator:
     def __init__(self, config): 
         self.cfg = config
 
-    def create_survey(self, time_channels, waveform, loop_z_range):
-        loop_z_val = np.random.uniform(loop_z_range[0], loop_z_range[1])
-        while loop_z_val < self.cfg.separation_z:
-            print(f"Warning: Generated loop_z={loop_z_val:.4f} < separation_z={self.cfg.separation_z}. Regenerating...")
-            loop_z_val = np.random.uniform(loop_z_range[0], loop_z_range[1])
-        
+    def create_survey(self, time_channels, waveform, loop_z_val):        
         xtx, ytx, ztx = np.meshgrid([0], [0], [loop_z_val])
         source_locations = np.c_[mkvc(xtx), mkvc(ytx), mkvc(ztx)]
         
@@ -52,14 +45,9 @@ class PiSimulator:
         )
         
         survey = tdem.Survey(source_list)
-        return loop_z_val, survey
+        return survey
 
-    def create_conductivity_model(self, mesh, target_z_range, target_present):
-        target_z_val = np.random.uniform(target_z_range[0], target_z_range[1])
-        while target_z_val > self.cfg.separation_z:
-            print(f"Warning: Generated target_z={target_z_val:.4f} > separation_z={-self.cfg.separation_z}. Regenerating...")
-            target_z_val = np.random.uniform(target_z_range[0], target_z_range[1])
-        
+    def create_conductivity_model(self, mesh, target_z_val, target_in_model):        
         active_area_z = self.cfg.separation_z
         ind_active = mesh.cell_centers[:, 2] < active_area_z
 
@@ -73,7 +61,7 @@ class PiSimulator:
         ind_soil = (z < 0)
         model[ind_soil] = self.cfg.soil_conductivity
 
-        if target_present: 
+        if target_in_model: 
             inner_radius = self.cfg.target_radius - self.cfg.target_thickness
             if inner_radius < 0:
                 inner_radius = 0
@@ -106,17 +94,32 @@ class PiSimulator:
             ind_bottom = (r <= self.cfg.target_radius) & (np.abs(z - bottom_z) <= 0.01)
             ind_can = ind_walls | ind_top | ind_bottom
             model[ind_can] = self.cfg.aluminum_conductivity
-        return target_z_val, model, model_map
+        return model, model_map
 
-    def run(self, loop_z_range, target_z_range, target_present, mesh=None):
-        # 1. Define the waveform and time channels
+    def run(self, loop_z_range, target_z_range, mesh=None):
+        target_over_soil = target_z_range is not None and target_z_range[0] >= 0
+        target_under_soil = target_z_range is not None and target_z_range[0] < 0
+        print(f"Target over soil: {target_over_soil}, Target under soil: {target_under_soil}")
+        print(f"Loop z range: {target_z_range}")
+
         waveform = tdem.sources.StepOffWaveform(off_time=self.cfg.waveform_off_time)
         time_channels = np.linspace(0, 1024e-6, 1024)
 
-        # 2. Create one survey with the range given
-        loop_z_val, survey = self.create_survey(time_channels, waveform, loop_z_range)
+        loop_z_val = np.random.uniform(loop_z_range[0], loop_z_range[1])
+        while loop_z_val < self.cfg.separation_z:
+            print(f"Warning: Generated loop_z={loop_z_val:.4f} < separation_z={self.cfg.separation_z}. Regenerating...")
+            loop_z_val = np.random.uniform(loop_z_range[0], loop_z_range[1])
+        
+        if target_z_range is not None:
+            target_z_val = np.random.uniform(target_z_range[0], target_z_range[1])
+            while target_z_val > self.cfg.separation_z:
+                print(f"Warning: Generated target_z={target_z_val:.4f} > separation_z={-self.cfg.separation_z}. Regenerating...")
+                target_z_val = np.random.uniform(target_z_range[0], target_z_range[1])
+        else:
+            target_z_val = None
 
-        # 3. Create or reuse the mesh
+        survey = self.create_survey(time_channels, waveform, loop_z_val)
+
         if mesh is None:
             hr = [(0.01, 15), (0.01, 15, 1.3), (0.05, 10, 1.5)]
             hphi = 1
@@ -126,10 +129,8 @@ class PiSimulator:
         else:
             create_plotting_metadata = False
 
-        # 4. Create conductivity model
-        target_z_val, model, model_map = self.create_conductivity_model(mesh, target_z_range, target_present)
+        model, model_map = self.create_conductivity_model(mesh, target_z_val, target_under_soil or target_over_soil)
 
-        # 5. Run simulation based on the survey and the model        
         simulation = tdem.simulation.Simulation3DMagneticFluxDensity(
             mesh,
             survey=survey,
@@ -141,27 +142,23 @@ class PiSimulator:
         dpred = simulation.dpred(m=model)
         dpred = np.reshape(dpred, (1, len(time_channels)))
         
-        # Generate label
-        if target_present:
+        if target_over_soil or target_under_soil:
             label = f"L{loop_z_val:.2f}-T{target_z_val:.2f}"
         else:
             label = f"L{loop_z_val:.2f}-T-"
 
-        # Metadata related to the simulation
         simulation_metadata = {
             'loop_z': loop_z_val,
-            'target_z': target_z_val if target_present else None,
-            'target_present': target_present,
+            'target_z': target_z_val if target_over_soil or target_under_soil else None,
+            'target_present': target_over_soil,
             'label': label
         }
 
-        # Metadata related to the plotting (only create once)
         plotting_metadata = None
         if create_plotting_metadata:
             active_area_z = self.cfg.separation_z
             ind_active = mesh.cell_centers[:, 2] < active_area_z
             
-            # Create reference model without target for plotting
             r = mesh.cell_centers[ind_active, 0]
             z = mesh.cell_centers[ind_active, 2]
             model_no_target = self.cfg.air_conductivity * np.ones(ind_active.sum())
@@ -182,13 +179,10 @@ class PiConditioner:
     def __init__(self):
         pass
 
-    # Assuming additive WGN, late_time is the time the signal power is counted
     def add_noise(self, time, data, late_time, snr_db):
-        # Handle if time is a list (from simulator.run())
         if isinstance(time, list):
             time = time[0]
         
-        # Handle if time is 2D array, extract first row
         if hasattr(time, 'ndim') and time.ndim > 1:
             time = time[0]
         
@@ -214,11 +208,9 @@ class PiConditioner:
         
 
     def amplify(self, time, data, time_gain):
-        # Handle if time is a list (from simulator.run())
         if isinstance(time, list):
             time = time[0]
         
-        # Handle if time is 2D array, extract first row
         if hasattr(time, 'ndim') and time.ndim > 1:
             time = time[0]
         
@@ -240,198 +232,180 @@ class PiConditioner:
 
 
 def run_simulations(simulator, logger, loop_z_range, target_z_range, 
-                   num_target_present, num_target_absent, output_file='tdem_dataset.h5'):
-    """
-    Run multiple simulations and save incrementally to HDF5.
-    
-    Parameters
-    ----------
-    simulator : PiSimulator
-        Simulator instance
-    logger : PiLogger
-        Logger instance for HDF5 operations
-    loop_z_range : list
-        [min, max] range for loop height
-    target_z_range : list
-        [min, max] range for target depth
-    num_target_present : int
-        Number of simulations with target
-    num_target_absent : int
-        Number of simulations without target
-    output_file : str
-        HDF5 output filename
-    
-    Returns
-    -------
-    str
-        Path to the generated HDF5 file
-    """
+                   num_target_present, num_target_absent, output_file=None):    
     mesh = None
     total_sims = num_target_present + num_target_absent
     sim_index = 0
     
-    # Initialize HDF5 file
+    if output_file is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        folder_name = f"Simulation_{total_sims}"
+        output_dir = os.path.join("Datasets", folder_name)
+        os.makedirs(output_dir, exist_ok=True)
+        output_file = os.path.join(output_dir, f"{timestamp}_TP{num_target_present}_TA{num_target_absent}.h5")
+    
     logger.initialize_hdf5(output_file, num_target_present, num_target_absent)
     
     print(f"\n=== Running Simulations (Writing to {output_file}) ===")
     
-    # Run target-present simulations
-    print(f"\nTarget-Present: 0/{num_target_present}", end='', flush=True)
+    print()
     for i in range(num_target_present):
         time, decay, label, metadata, plot_meta = simulator.run(
-            loop_z_range, target_z_range, target_present=True, mesh=mesh
+            loop_z_range, target_z_range, mesh=mesh
         )
         
         if mesh is None and plot_meta is not None:
             mesh = plot_meta['mesh']
         
-        # Write immediately to HDF5
-        logger.append_to_hdf5(output_file, sim_index, time, decay, label, metadata)
+        logger.store_to_hdf5(output_file, sim_index, time, decay, label, metadata)
         sim_index += 1
-        
-        print(f"\rTarget-Present: {i+1}/{num_target_present}", end='', flush=True)
+        print(f"\n\rTarget-Present: {i+1}/{num_target_present}", end='', flush=True)
     
     print()
     
-    # Run target-absent simulations
-    print(f"Target-Absent: 0/{num_target_absent}", end='', flush=True)
     for i in range(num_target_absent):
+        target_in_soil = np.random.rand() < 0.5
+        if target_in_soil:
+            target_z_range = [-simulator.cfg.separation_z, - 0.05 - simulator.cfg.target_height / 2]
+            print(f"Range: {target_z_range}")
+        else:
+            target_z_range = None
+        
         time, decay, label, metadata, plot_meta = simulator.run(
-            loop_z_range, target_z_range, target_present=False, mesh=mesh
+            loop_z_range, target_z_range, mesh=mesh
         )
         
-        # Write immediately to HDF5
-        logger.append_to_hdf5(output_file, sim_index, time, decay, label, metadata)
+        logger.store_to_hdf5(output_file, sim_index, time, decay, label, metadata)
         sim_index += 1
-        
-        print(f"\rTarget-Absent: {i+1}/{num_target_absent}", end='', flush=True)
-    
+
+        print(f"\n\rTarget-Absent: {i+1}/{num_target_absent}", end='', flush=True)
+
     print()
     
-    # Finalize metadata
     logger.finalize_hdf5(output_file, len(time))
     
     print(f"\n✓ Complete: {total_sims} simulations written to {output_file}")
     
     return output_file
 
-
-def plot_from_hdf5(hdf5_file, cfg):
-    """
-    Plot from HDF5 file using PiPlotter - shows model reconstruction + decay curves.
+def find_hdf5_files(root_dir='Datasets'):
+    hdf5_files = []
+    if not os.path.exists(root_dir):
+        return hdf5_files
     
-    Parameters
-    ----------
-    hdf5_file : str
-        Path to HDF5 file
-    cfg : PiConfig
-        Configuration object
-    """
-    from pi_plotter import plot_from_hdf5 as plotter_func
-    plotter_func(hdf5_file, cfg)
+    for dirpath, dirnames, filenames in os.walk(root_dir):
+        for filename in filenames:
+            if filename.endswith('.h5') or filename.endswith('.hdf5'):
+                full_path = os.path.join(dirpath, filename)
+                hdf5_files.append(full_path)
+    
+    return sorted(hdf5_files)
 
+def select_hdf5_file():
+    hdf5_files = find_hdf5_files('Datasets')
+    
+    if not hdf5_files:
+        print("\nNo HDF5 files found in ./Datasets directory.")
+        manual_input = input("Enter HDF5 file path manually (or 'q' to cancel): ").strip()
+        if manual_input.lower() == 'q':
+            return None
+        return manual_input
+    
+    print("\n" + "="*70)
+    print("Available HDF5 files:")
+    print("="*70)
+    
+    for idx, filepath in enumerate(hdf5_files):
+        file_size = os.path.getsize(filepath) / (1024 * 1024)
+        modified_time = datetime.fromtimestamp(os.path.getmtime(filepath))
+        print(f"  [{idx+1}] {filepath}")
+        print(f"      Size: {file_size:.2f} MB | Modified: {modified_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    
+    print(f"\nTotal files found: {len(hdf5_files)}")
+    print("Enter file number, or type path manually, or 'q' to cancel")
+    
+    user_input = input("Your selection: ").strip()
+    
+    if user_input.lower() == 'q':
+        return None
+    
+    try:
+        idx = int(user_input) - 1
+        if 0 <= idx < len(hdf5_files):
+            return hdf5_files[idx]
+        else:
+            print(f"Invalid selection. Index out of range.")
+            return None
+    except ValueError:
+        if os.path.exists(user_input):
+            return user_input
+        else:
+            print(f"File not found: {user_input}")
+            return None
 
 if __name__ == "__main__":
-    # Configuration
     cfg = PiConfig('config.json')
     simulator = PiSimulator(cfg)
     logger = PiLogger()
+    plotter = PiPlotter(cfg)
     
-    # Define simulation parameters
-    loop_z_range = [0.3, 0.6]      # Loop height range (must be >= separation_z = 0.3)
-    target_z_range = [-0.5, -0.3]  # Target depth range (must be <= -separation_z = -0.3)
-    num_target_present = 5          # Number of simulations with target
-    num_target_absent = 5           # Number of simulations without target
+    loop_z_range = [0.3, 0.6]
+    target_z_range = [0, 0.3]
+    num_target_present = 4
+    num_target_absent = 4
     
     print("\n" + "="*70)
     print("TDEM Simulation System")
     print("="*70)
     print("\nOptions:")
     print("  1. Generate HDF5 dataset")
-    print("  2. Convert HDF5 to CSV for ML")
-    print("  3. Visualize HDF5 data")
-    print("  4. Single simulation test")
+    print("  2. Visualize HDF5 data")
+    print("  3. Single simulation test")
+    print("  4. Print dataset statistics")
     
     choice = input("\nSelect option (1-4): ").strip()
     
     if choice == '1':
-        # Generate HDF5 dataset
-        output_file = input("Output HDF5 file (default 'tdem_dataset.h5'): ").strip() or 'tdem_dataset.h5'
-        
         hdf5_path = run_simulations(
             simulator, logger,
             loop_z_range=loop_z_range,
             target_z_range=target_z_range,
             num_target_present=num_target_present,
-            num_target_absent=num_target_absent,
-            output_file=output_file
+            num_target_absent=num_target_absent
         )
+        plotter.load_from_hdf5(hdf5_path)
         
-        # Ask if user wants to visualize
         visualize = input("\nVisualize results from file? (y/n): ").strip().lower()
         if visualize == 'y':
-            plot_from_hdf5(hdf5_path, cfg)
+            plotter.run()
         
     elif choice == '2':
-        # Convert HDF5 to CSV
-        hdf5_file = input("HDF5 file (default 'tdem_dataset.h5'): ").strip() or 'tdem_dataset.h5'
+        hdf5_file = select_hdf5_file()
         
-        try:
-            # Load from HDF5
-            print("\n=== Loading HDF5 Data ===")
-            csv_logger = PiLogger()
-            csv_logger.load_from_hdf5(hdf5_file)
-            csv_logger.print_summary()
-            
-            # Export to CSV
-            train_pct = float(input("\nTraining %% (default 70): ").strip() or "70")
-            test_pct = float(input("Test %% (default 15): ").strip() or "15")
-            output_dir = input("Output directory (default 'dataset'): ").strip() or "dataset"
-            
-            train_path, val_path, test_path = csv_logger.split_data(
-                train_percent=train_pct,
-                test_percent=test_pct,
-                output_dir=output_dir,
-                seed=42
-            )
-            
-            print("\n✓ CSV export complete!")
-            print(f"  Train: {train_path}")
-            print(f"  Val: {val_path}")
-            print(f"  Test: {test_path}")
-            
-        except FileNotFoundError:
-            print(f"Error: File '{hdf5_file}' not found.")
-        except Exception as e:
-            print(f"Error: {e}")
+        if hdf5_file is None:
+            print("Operation cancelled.")
+        else:
+            try:
+                plotter.load_from_hdf5(hdf5_file)
+                plotter.run()
+            except FileNotFoundError:
+                print(f"Error: File '{hdf5_file}' not found.")
+            except Exception as e:
+                print(f"Error: {e}")
     
     elif choice == '3':
-        # Visualize HDF5 data
-        hdf5_file = input("HDF5 file (default 'tdem_dataset.h5'): ").strip() or 'tdem_dataset.h5'
-        
-        try:
-            plot_from_hdf5(hdf5_file, simulator.cfg)
-        except FileNotFoundError:
-            print(f"Error: File '{hdf5_file}' not found.")
-        except Exception as e:
-            print(f"Error: {e}")
-    
-    elif choice == '4':
-        # Single simulation test
         print("\n=== Single Simulation Test ===")
         target_present = input("Include target? (y/n): ").strip().lower() == 'y'
         
         time, decay, label, metadata, _ = simulator.run(
             loop_z_range=loop_z_range,
-            target_z_range=target_z_range,
-            target_present=target_present
+            target_z_range=target_z_range
         )
         
         print(f"\n✓ Complete: {label}")
         print(f"  Loop: {metadata['loop_z']:.3f} m")
         print(f"  Target: {metadata['target_z']:.3f} m" if metadata['target_z'] else "  No target")
         
-        # Quick plot
         visualize = input("\nVisualize? (y/n): ").strip().lower()
         if visualize == 'y':
             fig, ax = plt.subplots(figsize=(10, 6))
@@ -447,6 +421,19 @@ if __name__ == "__main__":
             ax.grid(True, alpha=0.3, which='both')
             plt.tight_layout()
             plt.show()
+    
+    elif choice == '4':
+        hdf5_file = select_hdf5_file()
+        
+        if hdf5_file is None:
+            print("Operation cancelled.")
+        else:
+            try:
+                logger.print_hdf5_metadata(hdf5_file)
+            except FileNotFoundError:
+                print(f"Error: File '{hdf5_file}' not found.")
+            except Exception as e:
+                print(f"Error: {e}")
     
     else:
         print("Invalid option selected.")
