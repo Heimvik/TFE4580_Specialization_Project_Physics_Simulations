@@ -492,6 +492,130 @@ class PiLogger:
         
         print(f"Logger state loaded from: {filepath}")
         self.print_summary()
+    
+    def load_from_hdf5(self, filepath: str):
+        """
+        Load TDEM data from HDF5 file.
+        
+        Parameters
+        ----------
+        filepath : str
+            Path to HDF5 file created by PiSimulator
+        """
+        import h5py
+        
+        print(f"Loading data from HDF5: {filepath}")
+        
+        with h5py.File(filepath, 'r') as f:
+            num_sims = f['metadata'].attrs['num_simulations']
+            
+            for i in range(num_sims):
+                sim_group = f[f'simulations/simulation_{i}']
+                
+                # Load data
+                decay = sim_group['decay'][:]
+                label = sim_group.attrs['label']
+                loop_z = sim_group.attrs['loop_z']
+                target_present = sim_group.attrs['target_present']
+                
+                # Handle target_z (may be sentinel value)
+                target_z = sim_group.attrs['target_z']
+                if target_z == -999.0:
+                    target_z = None
+                
+                # Create metadata
+                metadata = {
+                    'loop_z': loop_z,
+                    'target_z': target_z,
+                    'target_present': target_present
+                }
+                
+                # Append to logger
+                self.append_data(decay, label, metadata)
+        
+        print(f"Loaded {num_sims} simulations from HDF5")
+        self.print_summary()
+    
+    def initialize_hdf5(self, filename: str, num_target_present: int, num_target_absent: int):
+        """
+        Initialize HDF5 file structure for incremental writing.
+        
+        Parameters
+        ----------
+        filename : str
+            HDF5 output filename
+        num_target_present : int
+            Number of simulations with target
+        num_target_absent : int
+            Number of simulations without target
+        """
+        import h5py
+        from datetime import datetime
+        
+        with h5py.File(filename, 'w') as f:
+            f.create_group('simulations')
+            meta_group = f.create_group('metadata')
+            meta_group.attrs['creation_time'] = datetime.now().isoformat()
+            meta_group.attrs['num_simulations'] = num_target_present + num_target_absent
+            meta_group.attrs['num_target_present'] = num_target_present
+            meta_group.attrs['num_target_absent'] = num_target_absent
+    
+    def append_to_hdf5(self, filename: str, sim_index: int, time: np.ndarray, 
+                      decay: np.ndarray, label: str, metadata: Dict[str, Any]):
+        """
+        Append a single simulation to HDF5 file incrementally.
+        
+        Parameters
+        ----------
+        filename : str
+            HDF5 file path
+        sim_index : int
+            Simulation index
+        time : np.ndarray
+            Time samples
+        decay : np.ndarray
+            Decay curve
+        label : str
+            Simulation label
+        metadata : dict
+            Simulation metadata (loop_z, target_z, target_present)
+        """
+        import h5py
+        
+        with h5py.File(filename, 'a') as f:
+            # Create group for this simulation
+            sim = f['simulations'].create_group(f'simulation_{sim_index}')
+            
+            # Save arrays with compression
+            sim.create_dataset('time', data=time, compression='gzip', compression_opts=4)
+            sim.create_dataset('decay', data=decay, compression='gzip', compression_opts=4)
+            
+            # Save metadata as attributes
+            sim.attrs['label'] = label
+            sim.attrs['loop_z'] = metadata['loop_z']
+            
+            if metadata['target_z'] is not None:
+                sim.attrs['target_z'] = metadata['target_z']
+                sim.attrs['target_present'] = True
+            else:
+                sim.attrs['target_z'] = -999.0  # Sentinel value
+                sim.attrs['target_present'] = False
+    
+    def finalize_hdf5(self, filename: str, time_samples: int):
+        """
+        Finalize HDF5 metadata after all simulations are written.
+        
+        Parameters
+        ----------
+        filename : str
+            HDF5 file path
+        time_samples : int
+            Number of time samples per simulation
+        """
+        import h5py
+        
+        with h5py.File(filename, 'a') as f:
+            f['metadata'].attrs['time_samples'] = time_samples
 
 
 # Example usage

@@ -1,136 +1,66 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.lines import Line2D
 from mpl_toolkits.mplot3d import Axes3D
 from simpeg import maps
-from discretize import CylindricalMesh
-import h5py
 
 class PiPlotter:
-    def __init__(self, hdf5_file, cfg):
+    def __init__(self, plotting_info, plot_linear=True, plot_loglog=True, 
+                 plot_side_view=True, plot_top_view=True, plot_3d=True, plot_combined=True):
         """
-        Initialize plotter with HDF5 file - reconstructs models from simulation data.
+        Initialize plotter with simulation info and plot selection flags.
         
         Parameters
         ----------
-        hdf5_file : str
-            Path to HDF5 file containing simulation data
-        cfg : PiConfig
-            Configuration object
+        plotting_info : dict
+            Dictionary containing mesh, models, and configuration
+        plot_linear : bool
+            Plot TDEM response on linear-linear scale
+        plot_loglog : bool
+            Plot TDEM response on log-log scale
+        plot_side_view : bool
+            Plot environment from side view (X-Z plane)
+        plot_top_view : bool
+            Plot environment from top view (X-Y plane)
+        plot_3d : bool
+            Plot 3D model of entire environment
+        plot_combined : bool
+            Plot combined model+survey with decay curves
         """
-        self.hdf5_file = hdf5_file
-        self.cfg = cfg
+        self.mesh = plotting_info['mesh']
+        self.model = plotting_info['model_with_target']
+        self.model_no_target = plotting_info['model_no_target']
+        self.ind_active = plotting_info['ind_active']
+        self.cfg = plotting_info['cfg']
+        self.loop_z_start = plotting_info['loop_z_start']
+        self.loop_z_increment = plotting_info['loop_z_increment']
+        self.num_increments = plotting_info['num_increments']
         
-        # Load metadata from HDF5
-        with h5py.File(hdf5_file, 'r') as f:
-            self.num_sims = f['metadata'].attrs['num_simulations']
-            self.num_present = f['metadata'].attrs['num_target_present']
-            self.num_absent = f['metadata'].attrs['num_target_absent']
-            
-        print(f"\n{'='*70}")
-        print(f"PiPlotter initialized from HDF5: {hdf5_file}")
-        print(f"{'='*70}")
-        print(f"Total simulations: {self.num_sims}")
-        print(f"  - Target present: {self.num_present}")
-        print(f"  - Target absent: {self.num_absent}")
+        # New fields for permutation tracking
+        self.surveys_list = plotting_info.get('surveys_list', [])
+        self.models_list = plotting_info.get('models_list', [])
+        self.target_present_metadata = plotting_info.get('target_present_metadata', [])
+        self.target_absent_metadata = plotting_info.get('target_absent_metadata', [])
         
-        # Reconstruct mesh (same for all simulations)
-        hr = [(0.01, 15), (0.01, 15, 1.3), (0.05, 10, 1.5)]
-        hphi = 1
-        hz = [(0.01, 10, -1.3), (0.01, 30), (0.01, 10, 1.3)]
-        self.mesh = CylindricalMesh([hr, hphi, hz], x0="00C")
+        # Plot selection flags
+        self.enable_linear = plot_linear
+        self.enable_loglog = plot_loglog
+        self.enable_side_view = plot_side_view
+        self.enable_top_view = plot_top_view
+        self.enable_3d = plot_3d
+        self.enable_combined = plot_combined
         
-        # Active cells
-        active_area_z = cfg.separation_z
-        self.ind_active = self.mesh.cell_centers[:, 2] < active_area_z
+        # Data for TDEM plots - now supports multiple labeled datasets
+        self.datasets = []  # List of dicts with 'label', 'times', 'decays'
         
-        # Base model (soil only, no target)
-        r = self.mesh.cell_centers[self.ind_active, 0]
-        z = self.mesh.cell_centers[self.ind_active, 2]
-        self.model_no_target = cfg.air_conductivity * np.ones(self.ind_active.sum())
-        ind_soil = (z < 0)
-        self.model_no_target[ind_soil] = cfg.soil_conductivity
-        
-        # Simulation metadata storage
-        self.simulations_metadata = []
-        
-        # Load all simulation metadata
-        self._load_metadata()
-    
-    def _load_metadata(self):
-        """Load metadata for all simulations from HDF5."""
-        with h5py.File(self.hdf5_file, 'r') as f:
-            for i in range(self.num_sims):
-                sim_group = f[f'simulations/simulation_{i}']
-                metadata = {
-                    'index': i,
-                    'loop_z': sim_group.attrs['loop_z'],
-                    'target_z': sim_group.attrs.get('target_z', None),
-                    'target_present': sim_group.attrs['target_present'],
-                    'label': sim_group.attrs['label'],
-                    'time': sim_group['time'][:],
-                    'decay': sim_group['decay'][:]
-                }
-                self.simulations_metadata.append(metadata)
-    
-    def _reconstruct_model(self, target_z, target_present):
-        """
-        Reconstruct conductivity model from target parameters.
-        
-        Parameters
-        ----------
-        target_z : float
-            Target center depth
-        target_present : bool
-            Whether target is present
-        
-        Returns
-        -------
-        model : ndarray
-            Conductivity model
-        """
-        r = self.mesh.cell_centers[self.ind_active, 0]
-        z = self.mesh.cell_centers[self.ind_active, 2]
-        
-        # Start with base model (air + soil)
-        model = self.model_no_target.copy()
-        
-        if target_present and target_z is not None:
-            # Add target
-            inner_radius = self.cfg.target_radius - self.cfg.target_thickness
-            if inner_radius < 0:
-                inner_radius = 0
-            
-            unique_r = np.unique(r)
-            if len(unique_r) > 1:
-                min_cell_width = np.min(np.diff(unique_r[unique_r > 0]))
-            else:
-                min_cell_width = 0.01
-            
-            top_z = target_z + self.cfg.target_height/2
-            bottom_z = target_z - self.cfg.target_height/2
-            
-            if self.cfg.target_thickness < min_cell_width:
-                ind_walls = (
-                    (r >= self.cfg.target_radius - min_cell_width) &
-                    (r <= self.cfg.target_radius) &
-                    (z < top_z) &
-                    (z > bottom_z)
-                )
-            else:
-                ind_walls = (
-                    (r >= inner_radius) &
-                    (r <= self.cfg.target_radius) &
-                    (z < top_z) &
-                    (z > bottom_z)
-                )
-            
-            ind_top = (r <= self.cfg.target_radius) & (np.abs(z - top_z) <= 0.01)
-            ind_bottom = (r <= self.cfg.target_radius) & (np.abs(z - bottom_z) <= 0.01)
-            ind_can = ind_walls | ind_top | ind_bottom
-            model[ind_can] = self.cfg.aluminum_conductivity
-        
-        return model
+        # Color palette for different labels
+        self.color_palettes = {
+            'unconditioned': {'base': 'blue', 'name': 'Blue'},
+            'noise_free': {'base': 'green', 'name': 'Green'},
+            'noisy': {'base': 'orange', 'name': 'Orange'},
+            'filtered': {'base': 'purple', 'name': 'Purple'},
+            'amplified': {'base': 'cyan', 'name': 'Cyan'},
+            'default': {'base': 'gray', 'name': 'Gray'}
+        }
 
     def update_times_data(self, times, decays, label='unconditioned', replace=True):
         """
@@ -672,16 +602,36 @@ class PiPlotter:
     def show_plots(self):
         """
         Interactively show plots with user selection.
-        Displays the combined view showing physical configurations and decay curves.
+        User can choose which plots to display from the enabled options.
         """
+        # Build available plots dictionary
+        available_plots = {}
+        
+        if self.enable_linear:
+            available_plots['1'] = ('TDEM Linear', self.plot_tdem_linear)
+        if self.enable_loglog:
+            available_plots['2'] = ('TDEM Log-Log', self.plot_tdem_loglog)
+        if self.enable_3d:
+            available_plots['3'] = ('3D View', self.plot_3d_view)
+        if self.enable_side_view:
+            available_plots['4'] = ('Side View', self.plot_side_view)
+        if self.enable_top_view:
+            available_plots['5'] = ('Top View', self.plot_top_view)
+        if self.enable_combined:
+            available_plots['6'] = ('TDEM Log-Log + Side View', self.plot_combined_view)
+        
+        if not available_plots:
+            print("No plots enabled.")
+            return
+        
         print(f"\n{'='*60}")
-        print("PiPlotter: HDF5-Based Visualization")
+        print("PiPlotter: Interactive Plot Selection")
         print(f"{'='*60}")
         
         while True:
             print("\nAvailable plots:")
-            print("  [1] Combined View (Model + Decay Curves)")
-            print("  [2] Quick Log-Log Plot (first N simulations)")
+            for key, (name, _) in available_plots.items():
+                print(f"  [{key}] {name}")
             print("  [q] Quit plotting")
             
             choice = input("\nSelect a plot to display (or 'q' to quit): ").strip().lower()
@@ -690,197 +640,13 @@ class PiPlotter:
                 print("Exiting plotter.")
                 break
             
-            if choice == '1':
-                print("\nShowing: Combined View")
-                self.plot_combined_from_hdf5()
-            elif choice == '2':
-                print("\nShowing: Quick Log-Log Plot")
-                self._quick_loglog_plot()
+            if choice in available_plots:
+                plot_name, plot_func = available_plots[choice]
+                print(f"\nShowing: {plot_name}")
+                plot_func()
             else:
                 print(f"Invalid choice: '{choice}'. Please select from the menu.")
         
         print(f"\n{'='*60}")
         print("Plotting session ended.")
         print(f"{'='*60}\n")
-    
-    def _quick_loglog_plot(self):
-        """Quick plot of first N simulations."""
-        n = int(input(f"How many simulations to plot (max {self.num_sims})? ").strip() or "5")
-        n = min(n, self.num_sims)
-        
-        fig, ax = plt.subplots(figsize=(12, 7))
-        
-        for i in range(n):
-            meta = self.simulations_metadata[i]
-            time_us = meta['time'] * 1e6
-            decay = np.abs(meta['decay'])
-            
-            color = 'green' if meta['target_present'] else 'blue'
-            ax.loglog(time_us, decay, color=color, alpha=0.7, linewidth=1.5, label=meta['label'])
-        
-        ax.set_xlabel('Time [μs]', fontsize=12)
-        ax.set_ylabel('|dBz/dt| [T/s]', fontsize=12)
-        ax.set_title(f'TDEM Decay Curves (first {n} simulations)', fontsize=14, fontweight='bold')
-        
-        # Legend
-        if n <= 10:
-            ax.legend(fontsize=9, ncol=2)
-        else:
-            legend_elements = [
-                Line2D([0], [0], color='green', lw=2, label='Target Present'),
-                Line2D([0], [0], color='blue', lw=2, label='Target Absent')
-            ]
-            ax.legend(handles=legend_elements, fontsize=10)
-        
-        ax.grid(True, alpha=0.3, which='both')
-        plt.tight_layout()
-        plt.show()
-    
-    def plot_combined_from_hdf5(self):
-        """
-        Plot side-by-side: model visualization + decay curves.
-        Shows which decay curve comes from which physical configuration.
-        """
-        print("\n" + "="*70)
-        print("Combined View: Physical Configuration + Decay Curves")
-        print("="*70)
-        print("\nAvailable simulations:")
-        
-        for idx, meta in enumerate(self.simulations_metadata):
-            if meta['target_present']:
-                print(f"  [{idx+1}] {meta['label']} (Loop @ {meta['loop_z']:.3f}m, Target @ {meta['target_z']:.3f}m)")
-            else:
-                print(f"  [{idx+1}] {meta['label']} (Loop @ {meta['loop_z']:.3f}m, No Target)")
-        
-        print("\nSelect simulations to plot:")
-        print("  - Enter numbers (comma-separated, e.g., '1,3,5')")
-        print("  - Enter 'all' for all simulations (max 8)")
-        print("  - Enter 'compare' to compare first present vs first absent")
-        print("  - Enter 'q' to cancel")
-        
-        user_input = input("Your selection: ").strip()
-        
-        if user_input.lower() == 'q':
-            print("Plot cancelled.")
-            return
-        
-        selected_indices = []
-        if user_input.lower() == 'all':
-            selected_indices = list(range(min(8, self.num_sims)))
-        elif user_input.lower() == 'compare':
-            # Find first present and first absent
-            for i, meta in enumerate(self.simulations_metadata):
-                if meta['target_present'] and not any(self.simulations_metadata[j]['target_present'] for j in selected_indices):
-                    selected_indices.append(i)
-                elif not meta['target_present'] and not any(not self.simulations_metadata[j]['target_present'] for j in selected_indices):
-                    selected_indices.append(i)
-                if len(selected_indices) >= 2:
-                    break
-        else:
-            try:
-                parts = [p.strip() for p in user_input.split(',')]
-                for part in parts:
-                    idx = int(part) - 1
-                    if 0 <= idx < self.num_sims:
-                        selected_indices.append(idx)
-                    else:
-                        print(f"Warning: Index {part} out of range, skipping.")
-            except ValueError:
-                print("Invalid input format.")
-                return
-        
-        if not selected_indices:
-            print("No valid simulations selected.")
-            return
-        
-        print(f"\nPlotting {len(selected_indices)} simulation(s)...")
-        
-        # Create figure with two subplots
-        fig, (ax_model, ax_decay) = plt.subplots(1, 2, figsize=(18, 8))
-        
-        # Get cell centers
-        r = self.mesh.cell_centers[self.ind_active, 0]
-        z = self.mesh.cell_centers[self.ind_active, 2]
-        
-        # --- Left: Side View (Physical Configurations) ---
-        ax_model.set_title('Physical Configurations (Side View)', fontsize=14, fontweight='bold')
-        ax_model.set_aspect('equal')
-        
-        # Plot soil layer once (background)
-        ind_soil = (self.model_no_target >= 1e-4) & (self.model_no_target < 1e5)
-        if ind_soil.sum() > 0:
-            ax_model.scatter(r[ind_soil][::20], z[ind_soil][::20], c='saddlebrown', s=1, alpha=0.3, label='Soil')
-        
-        # Ground level
-        ax_model.axhline(0, color='green', linewidth=2, linestyle='--', alpha=0.5, label='Ground Level')
-        
-        # Use colormap for different simulations
-        colors = plt.cm.tab10(np.linspace(0, 1, len(selected_indices)))
-        
-        # Plot each selected configuration
-        for plot_idx, sim_idx in enumerate(selected_indices):
-            meta = self.simulations_metadata[sim_idx]
-            color = colors[plot_idx]
-            
-            # Reconstruct model
-            model = self._reconstruct_model(meta['target_z'], meta['target_present'])
-            
-            # Plot target if present
-            if meta['target_present']:
-                ind_aluminum = model >= 1e5
-                if ind_aluminum.sum() > 0:
-                    ax_model.scatter(r[ind_aluminum], z[ind_aluminum], c=[color], s=15, alpha=0.8,
-                                   marker='s', edgecolors='black', linewidths=0.5,
-                                   label=f"Target: {meta['label']}")
-            
-            # Plot transmitter loop
-            loop_radius = float(self.cfg.tx_radius)
-            loop_theta = np.linspace(0, 2*np.pi, 100)
-            loop_r = loop_radius * np.ones_like(loop_theta)
-            
-            # Project to 2D (side view): show as horizontal lines at loop_z
-            ax_model.plot([-loop_radius, loop_radius], [meta['loop_z'], meta['loop_z']],
-                         color=color, linewidth=3, marker='o', markersize=8,
-                         label=f"Loop: {meta['label']}")
-        
-        ax_model.set_xlabel('Radial Distance [m]', fontsize=12)
-        ax_model.set_ylabel('Depth [m]', fontsize=12)
-        ax_model.legend(loc='best', fontsize=8, ncol=1)
-        ax_model.grid(True, alpha=0.3)
-        
-        # --- Right: Decay Curves ---
-        ax_decay.set_title('TDEM Decay Curves (Log-Log)', fontsize=14, fontweight='bold')
-        
-        for plot_idx, sim_idx in enumerate(selected_indices):
-            meta = self.simulations_metadata[sim_idx]
-            color = colors[plot_idx]
-            
-            time_us = meta['time'] * 1e6  # Convert to microseconds
-            decay = np.abs(meta['decay'])
-            
-            ax_decay.loglog(time_us, decay, color=color, linewidth=2.5, alpha=0.8,
-                           label=meta['label'])
-        
-        ax_decay.set_xlabel('Time [μs]', fontsize=12)
-        ax_decay.set_ylabel('|dBz/dt| [T/s]', fontsize=12)
-        ax_decay.legend(loc='best', fontsize=9)
-        ax_decay.grid(True, alpha=0.3, which='both')
-        
-        plt.tight_layout()
-        plt.show()
-
-
-def plot_from_hdf5(hdf5_file, cfg):
-    """
-    Plot from HDF5 file using PiPlotter class.
-    Creates interactive plotter that reconstructs models and shows visualizations.
-    
-    Parameters
-    ----------
-    hdf5_file : str
-        Path to HDF5 file
-    cfg : PiConfig
-        Configuration object
-    """
-    plotter = PiPlotter(hdf5_file, cfg)
-    plotter.show_plots()
