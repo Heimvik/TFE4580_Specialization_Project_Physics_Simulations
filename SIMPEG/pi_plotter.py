@@ -173,9 +173,9 @@ class PiPlotter:
             color = 'green' if meta['target_present'] else 'blue'
             ax.loglog(time_us, decay, color=color, alpha=0.7, linewidth=1.5, label=meta['label'])
         
-        ax.set_xlabel('Time [μs]', fontsize=12)
-        ax.set_ylabel('|dBz/dt| [T/s]', fontsize=12)
-        ax.set_title(f'TDEM Decay Curves (first {n} simulations)', fontsize=14, fontweight='bold')
+        ax.set_xlabel('Time [μs]', fontsize=14)
+        ax.set_ylabel(r'$|\frac{dB_z}{dt}|$ [T/s]', fontsize=14, rotation=0)
+        ax.set_title(f'TDEM Decay Curves (first {n} simulations)', fontsize=16, fontweight='bold')
         
         if n <= 10:
             ax.legend(fontsize=9, ncol=2)

@@ -99,8 +99,6 @@ class PiSimulator:
     def run(self, loop_z_range, target_z_range, mesh=None):
         target_over_soil = target_z_range is not None and target_z_range[0] >= 0
         target_under_soil = target_z_range is not None and target_z_range[0] < 0
-        print(f"Target over soil: {target_over_soil}, Target under soil: {target_under_soil}")
-        print(f"Loop z range: {target_z_range}")
 
         waveform = tdem.sources.StepOffWaveform(off_time=self.cfg.waveform_off_time)
         time_channels = np.linspace(0, 1024e-6, 1024)
@@ -232,7 +230,7 @@ class PiConditioner:
 
 
 def run_simulations(simulator, logger, loop_z_range, target_z_range, 
-                   num_target_present, num_target_absent, output_file=None):    
+                   num_target_present, num_target_absent, target_in_soil=True, output_file=None):    
     mesh = None
     total_sims = num_target_present + num_target_absent
     sim_index = 0
@@ -264,10 +262,8 @@ def run_simulations(simulator, logger, loop_z_range, target_z_range,
     print()
     
     for i in range(num_target_absent):
-        target_in_soil = np.random.rand() < 0.5
-        if target_in_soil:
+        if np.random.rand() < 0.5 and target_in_soil:
             target_z_range = [-simulator.cfg.separation_z, - 0.05 - simulator.cfg.target_height / 2]
-            print(f"Range: {target_z_range}")
         else:
             target_z_range = None
         
@@ -349,10 +345,10 @@ if __name__ == "__main__":
     logger = PiLogger()
     plotter = PiPlotter(cfg)
     
-    loop_z_range = [0.3, 0.6]
+    loop_z_range = [0.3, 0.3]
     target_z_range = [0, 0.3]
-    num_target_present = 4
-    num_target_absent = 4
+    num_target_present = 3
+    num_target_absent = 1
     
     print("\n" + "="*70)
     print("TDEM Simulation System")
@@ -371,7 +367,8 @@ if __name__ == "__main__":
             loop_z_range=loop_z_range,
             target_z_range=target_z_range,
             num_target_present=num_target_present,
-            num_target_absent=num_target_absent
+            num_target_absent=num_target_absent,
+            target_in_soil=False
         )
         plotter.load_from_hdf5(hdf5_path)
         
