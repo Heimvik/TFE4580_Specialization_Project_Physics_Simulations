@@ -1,1 +1,7 @@
-./Datasets/
+# Ignore all Datasets directories
+Datasets/
+**/Datasets/
+
+# Ignore HDF5 files
+*.h5
+*.hdf5
