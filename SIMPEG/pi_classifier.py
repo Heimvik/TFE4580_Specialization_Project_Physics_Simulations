@@ -9,8 +9,9 @@ from datetime import datetime
 
 
 class PiClassifier():
-    def __init__(self):
+    def __init__(self, conditioner=None):
         self.model = None
+        self.conditioner = conditioner
         # Store split data in memory
         self.train_data = None  # (time, decay_curves, labels, label_strings, metadata)
         self.val_data = None
@@ -22,6 +23,7 @@ class PiClassifier():
         self.y_val = None
         self.X_test = None
         self.y_test = None
+        self.norm_params = None
     
     def split_dataset(self, logger, source_path, train_ratio=0.7, val_ratio=0.15, test_ratio=0.15, save_to_file=False): 
         print("\n" + "="*70)
@@ -79,12 +81,19 @@ class PiClassifier():
             {**metadata, 'num_simulations': len(test_idx)}
         )
         
-        # Prepare arrays for training
-        self.X_train = decay_curves[train_idx].reshape(len(train_idx), decay_curves.shape[1], 1)
+        # Normalize data using conditioner
+        if self.conditioner:
+            decay_normalized, self.norm_params = self.conditioner.normalize_for_training(decay_curves)
+            print(f"\n✓ Data normalized: log-scale + min-max [range: {self.norm_params['min']:.2f} to {self.norm_params['max']:.2f}]")
+        else:
+            decay_normalized = decay_curves
+            print(f"\n⚠️  Warning: No conditioner provided, using raw data")
+        
+        self.X_train = decay_normalized[train_idx].reshape(len(train_idx), decay_curves.shape[1], 1)
         self.y_train = labels[train_idx]
-        self.X_val = decay_curves[val_idx].reshape(len(val_idx), decay_curves.shape[1], 1)
+        self.X_val = decay_normalized[val_idx].reshape(len(val_idx), decay_curves.shape[1], 1)
         self.y_val = labels[val_idx]
-        self.X_test = decay_curves[test_idx].reshape(len(test_idx), decay_curves.shape[1], 1)
+        self.X_test = decay_normalized[test_idx].reshape(len(test_idx), decay_curves.shape[1], 1)
         self.y_test = labels[test_idx]
         
         print("\n✓ Dataset split complete! Data stored in memory.")
@@ -170,14 +179,19 @@ class PiClassifier():
     def build_model(self, num_samples):
         inputs = keras.Input(shape=(num_samples, 1))
         x = layers.Conv1D(filters=32, kernel_size=3, activation='relu')(inputs)
+        x = layers.BatchNormalization()(x)
         x = layers.MaxPooling1D(pool_size=2)(x)
         x = layers.Conv1D(filters=64, kernel_size=3, activation='relu')(x)
+        x = layers.BatchNormalization()(x)
         x = layers.MaxPooling1D(pool_size=2)(x)
         x = layers.Conv1D(filters=128, kernel_size=3, activation='relu')(x)
+        x = layers.BatchNormalization()(x)
         x = layers.MaxPooling1D(pool_size=2)(x)
         x = layers.Flatten()(x)
         x = layers.Dense(128, activation='relu')(x)
+        x = layers.Dropout(0.3)(x)
         x = layers.Dense(64, activation='relu')(x)
+        x = layers.Dropout(0.3)(x)
         outputs = layers.Dense(2, activation='softmax')(x)
         self.model = keras.Model(inputs, outputs)
         return self.model
@@ -194,7 +208,8 @@ class PiClassifier():
         if validation_data:
             print(f"Validation samples: {len(X_val)}")
         
-        self.model.compile(optimizer='adam',
+        optimizer = keras.optimizers.Adam(learning_rate=0.0001)
+        self.model.compile(optimizer=optimizer,
                            loss='sparse_categorical_crossentropy',
                            metrics=['accuracy'])
         

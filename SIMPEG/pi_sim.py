@@ -278,8 +278,23 @@ class PiConditioner:
         return data * gain
 
     def normalize(self, data, max=None):
-        max = np.max(np.abs(data)) if max is None else max
-        return np.maximum(data / max, 0)
+        data_min = np.min(data)
+        data_max = np.max(data)
+        data_normalized = (data - data_min) / (data_max - data_min + 1e-10)
+        return data_normalized
+    
+    def normalize_for_training(self, data):
+        """Normalize decay curves for neural network training using log-scale normalization"""
+        # Take log of absolute values to handle orders of magnitude variation
+        data_log = np.log10(np.abs(data) + 1e-20)  # Add small constant to avoid log(0)
+        #data_log = data
+        
+        # Normalize to [0, 1] range
+        data_min = np.min(data_log)
+        data_max = np.max(data_log)
+        data_normalized = (data_log - data_min) / (data_max - data_min + 1e-10)
+        
+        return data_normalized, {'min': data_min, 'max': data_max}
 
     def quantize(self, data, depth, dtype):
         return (np.round(data * 2**depth)).astype(dtype)
@@ -438,13 +453,18 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                     print(f"Loading: {os.path.basename(train_path)}")
                     time, decay_curves, labels, _, _ = logger.load_from_hdf5(train_path)
                     num_samples = len(time)
-                    X_train = decay_curves.reshape(decay_curves.shape[0], decay_curves.shape[1], 1)
+                    
+                    # Normalize data
+                    decay_normalized, norm_params = conditioner.normalize_for_training(decay_curves)
+                    classifier.norm_params = norm_params
+                    X_train = decay_normalized.reshape(decay_curves.shape[0], decay_curves.shape[1], 1)
                     y_train = labels
                     
                     val_path = get_split_dataset_path(hdf5_file, 'val')
                     if val_path:
                         _, decay_curves_val, labels_val, _, _ = logger.load_from_hdf5(val_path)
-                        X_val = decay_curves_val.reshape(decay_curves_val.shape[0], decay_curves_val.shape[1], 1)
+                        decay_val_normalized, _ = conditioner.normalize_for_training(decay_curves_val)
+                        X_val = decay_val_normalized.reshape(decay_curves_val.shape[0], decay_curves_val.shape[1], 1)
                         y_val = labels_val
                     else:
                         X_val, y_val = None, None
@@ -493,7 +513,8 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                     
                     print(f"Loading: {os.path.basename(val_path)}")
                     _, decay_curves, labels, _, _ = logger.load_from_hdf5(val_path)
-                    X_val = decay_curves.reshape(decay_curves.shape[0], decay_curves.shape[1], 1)
+                    decay_normalized, _ = conditioner.normalize_for_training(decay_curves)
+                    X_val = decay_normalized.reshape(decay_curves.shape[0], decay_curves.shape[1], 1)
                     y_val = labels
                     classifier.validate_model(X_val, y_val)
                 
@@ -532,7 +553,8 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                     
                     print(f"Loading: {os.path.basename(test_path)}")
                     _, decay_curves, labels, _, _ = logger.load_from_hdf5(test_path)
-                    X_test = decay_curves.reshape(decay_curves.shape[0], decay_curves.shape[1], 1)
+                    decay_normalized, _ = conditioner.normalize_for_training(decay_curves)
+                    X_test = decay_normalized.reshape(decay_curves.shape[0], decay_curves.shape[1], 1)
                     y_test = labels
                     classifier.test_model(X_test, y_test)
                 
@@ -553,7 +575,8 @@ if __name__ == "__main__":
     simulator = PiSimulator(cfg)
     logger = PiLogger()
     plotter = PiPlotter(cfg)
-    classifier = PiClassifier()
+    conditioner = PiConditioner()
+    classifier = PiClassifier(conditioner)
 
     num_target_present = 3
     num_target_absent = 1
