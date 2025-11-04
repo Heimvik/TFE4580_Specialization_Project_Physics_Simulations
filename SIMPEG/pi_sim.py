@@ -1,4 +1,4 @@
-from discretize import CylindricalMesh
+from discretize import CylindricalMesh, TensorMesh
 from discretize.utils import mkvc
 
 from simpeg import maps
@@ -96,7 +96,7 @@ class PiSimulator:
             model[ind_can] = self.cfg.aluminum_conductivity
         return model, model_map
 
-    def run(self, loop_z_range, target_z_range, mesh=None):
+    def run(self, loop_z_range, target_z_range, mesh=None, compute_magnetic_field=False):
         target_over_soil = target_z_range is not None and target_z_range[0] >= 0
         target_under_soil = target_z_range is not None and target_z_range[0] < 0
 
@@ -129,6 +129,7 @@ class PiSimulator:
 
         model, model_map = self.create_conductivity_model(mesh, target_z_val, target_under_soil or target_over_soil)
 
+        # Always use Simulation3DMagneticFluxDensity for primary simulation
         simulation = tdem.simulation.Simulation3DMagneticFluxDensity(
             mesh,
             survey=survey,
@@ -140,6 +141,110 @@ class PiSimulator:
         dpred = simulation.dpred(m=model)
         dpred = np.reshape(dpred, (1, len(time_channels)))
         
+        # Optionally compute magnetic field distribution using Cartesian mesh
+        magnetic_field_data = None
+        if compute_magnetic_field:
+            print("Computing 3D magnetic field distribution...", end='', flush=True)
+            try:
+                # Create a coarse Cartesian mesh for magnetic field computation (for speed)
+                hx = [(0.05, 10)]  # Coarser: 10 cells instead of 25
+                hy = [(0.05, 10)]  # Coarser: 10 cells instead of 25
+                hz_cart = [(0.05, 5, -1.3), (0.05, 10), (0.05, 5, 1.3)]  # Coarser vertical resolution
+                mesh_cart = TensorMesh([hx, hy, hz_cart], x0=[-0.25, -0.25, mesh.x0[2]])
+                
+                # Create survey for magnetic field
+                survey_field = self.create_survey(time_channels, waveform, loop_z_val)
+                
+                # Create conductivity model for Cartesian mesh
+                active_area_z = self.cfg.separation_z
+                ind_active_field = mesh_cart.cell_centers[:, 2] < active_area_z
+                
+                model_map_field = maps.InjectActiveCells(mesh_cart, ind_active_field, self.cfg.air_conductivity)
+                
+                x = mesh_cart.cell_centers[ind_active_field, 0]
+                y = mesh_cart.cell_centers[ind_active_field, 1]
+                z = mesh_cart.cell_centers[ind_active_field, 2]
+                r_cart = np.sqrt(x**2 + y**2)
+                
+                model_field = self.cfg.air_conductivity * np.ones(ind_active_field.sum())
+                ind_soil_field = (z < 0)
+                model_field[ind_soil_field] = self.cfg.soil_conductivity
+                
+                # Add target if present
+                if target_under_soil or target_over_soil:
+                    inner_radius = self.cfg.target_radius - self.cfg.target_thickness
+                    if inner_radius < 0:
+                        inner_radius = 0
+                    
+                    top_z = target_z_val + self.cfg.target_height/2
+                    bottom_z = target_z_val - self.cfg.target_height/2
+                    
+                    ind_walls = (
+                        (r_cart >= inner_radius) &
+                        (r_cart <= self.cfg.target_radius) &
+                        (z < top_z) &
+                        (z > bottom_z)
+                    )
+                    
+                    ind_top = (r_cart <= self.cfg.target_radius) & (np.abs(z - top_z) <= 0.01)
+                    ind_bottom = (r_cart <= self.cfg.target_radius) & (np.abs(z - bottom_z) <= 0.01)
+                    ind_can = ind_walls | ind_top | ind_bottom
+                    model_field[ind_can] = self.cfg.aluminum_conductivity
+                
+                # Create magnetic field simulation with reduced time steps for speed
+                simulation_field = tdem.simulation.Simulation3DMagneticField(
+                    mesh_cart,
+                    survey=survey_field,
+                    sigmaMap=model_map_field,
+                    t0=self.cfg.simulation_t0
+                )
+                # Use fewer time steps for magnetic field (every 4th step for speed)
+                reduced_time_steps = [(n, dt*4) for n, dt in self.cfg.time_steps]
+                simulation_field.time_steps = reduced_time_steps
+                
+                # Compute fields at selected time steps
+                fields = simulation_field.fields(m=model_field)
+                
+                # Select only 2 time snapshots instead of 3 (mid and late for speed)
+                time_indices = [len(time_channels)//2, 3*len(time_channels)//4]
+                selected_times = time_channels[time_indices]
+                
+                # Extract magnetic field at these times and convert to cell centers
+                field_snapshots = []
+                for t_idx in time_indices:
+                    # Get magnetic field at this time (adjusted for reduced time steps)
+                    adjusted_idx = t_idx // 4  # Account for 4x time step reduction
+                    h_field_faces = fields[:, 'h', adjusted_idx]
+                    
+                    # Average from faces to cell centers for easier visualization
+                    # H field is stored as [hx_faces, hy_faces, hz_faces]
+                    h_field_cc = mesh_cart.average_face_to_cell * h_field_faces
+                    
+                    # Compute magnitude at cell centers
+                    n_cells = mesh_cart.nC
+                    hx = h_field_cc[:n_cells]
+                    hy = h_field_cc[n_cells:2*n_cells]
+                    hz = h_field_cc[2*n_cells:3*n_cells]
+                    h_magnitude = np.sqrt(hx**2 + hy**2 + hz**2)
+                    
+                    field_snapshots.append(h_magnitude)
+                
+                magnetic_field_data = {
+                    'selected_times': selected_times,
+                    'field_snapshots': field_snapshots,  # Now storing magnitude at cell centers
+                    'mesh_info': {
+                        'cell_centers': mesh_cart.cell_centers,
+                        'ind_active': ind_active_field,
+                        'n_cells': mesh_cart.nC,
+                        'n_faces': mesh_cart.nF
+                    }
+                }
+                
+                print(" Done!")
+            except Exception as e:
+                print(f" Failed! Error: {e}")
+                magnetic_field_data = None
+        
         if target_over_soil or target_under_soil:
             label = f"L{loop_z_val:.2f}-T{target_z_val:.2f}"
         else:
@@ -149,7 +254,8 @@ class PiSimulator:
             'loop_z': loop_z_val,
             'target_z': target_z_val if target_over_soil or target_under_soil else None,
             'target_present': target_over_soil,
-            'label': label
+            'label': label,
+            'has_magnetic_field': magnetic_field_data is not None
         }
 
         plotting_metadata = None
@@ -170,7 +276,7 @@ class PiSimulator:
                 'cfg': self.cfg
             }
         
-        return time_channels, -dpred[0, :], label, simulation_metadata, plotting_metadata
+        return time_channels, -dpred[0, :], label, simulation_metadata, plotting_metadata, magnetic_field_data
 
 
 class PiConditioner:
@@ -230,7 +336,7 @@ class PiConditioner:
 
 
 def run_simulations(simulator, logger, loop_z_range, target_z_range, 
-                   num_target_present, num_target_absent, target_in_soil=True, output_file=None):    
+                   num_target_present, num_target_absent, target_in_soil=True, output_file=None, compute_magnetic_field=False):    
     mesh = None
     total_sims = num_target_present + num_target_absent
     sim_index = 0
@@ -240,22 +346,23 @@ def run_simulations(simulator, logger, loop_z_range, target_z_range,
         folder_name = f"Simulation_{total_sims}"
         output_dir = os.path.join("Datasets", folder_name)
         os.makedirs(output_dir, exist_ok=True)
-        output_file = os.path.join(output_dir, f"{timestamp}_TP{num_target_present}_TA{num_target_absent}.h5")
+        suffix = "_MF" if compute_magnetic_field else ""
+        output_file = os.path.join(output_dir, f"{timestamp}_TP{num_target_present}_TA{num_target_absent}{suffix}.h5")
     
-    logger.initialize_hdf5(output_file, num_target_present, num_target_absent)
+    logger.initialize_hdf5(output_file, num_target_present, num_target_absent, has_magnetic_field=compute_magnetic_field)
     
     print(f"\n=== Running Simulations (Writing to {output_file}) ===")
     
     print()
     for i in range(num_target_present):
-        time, decay, label, metadata, plot_meta = simulator.run(
-            loop_z_range, target_z_range, mesh=mesh
+        time, decay, label, metadata, plot_meta, mag_field_data = simulator.run(
+            loop_z_range, target_z_range, mesh=mesh, compute_magnetic_field=compute_magnetic_field
         )
         
         if mesh is None and plot_meta is not None:
             mesh = plot_meta['mesh']
         
-        logger.store_to_hdf5(output_file, sim_index, time, decay, label, metadata)
+        logger.store_to_hdf5(output_file, sim_index, time, decay, label, metadata, magnetic_field_data=mag_field_data)
         sim_index += 1
         print(f"\n\rTarget-Present: {i+1}/{num_target_present}", end='', flush=True)
     
@@ -267,11 +374,11 @@ def run_simulations(simulator, logger, loop_z_range, target_z_range,
         else:
             target_z_range = None
         
-        time, decay, label, metadata, plot_meta = simulator.run(
-            loop_z_range, target_z_range, mesh=mesh
+        time, decay, label, metadata, plot_meta, mag_field_data = simulator.run(
+            loop_z_range, target_z_range, mesh=mesh, compute_magnetic_field=compute_magnetic_field
         )
         
-        logger.store_to_hdf5(output_file, sim_index, time, decay, label, metadata)
+        logger.store_to_hdf5(output_file, sim_index, time, decay, label, metadata, magnetic_field_data=mag_field_data)
         sim_index += 1
 
         print(f"\n\rTarget-Absent: {i+1}/{num_target_absent}", end='', flush=True)
@@ -362,13 +469,30 @@ if __name__ == "__main__":
     choice = input("\nSelect option (1-4): ").strip()
     
     if choice == '1':
+        print("\nDataset Type:")
+        print("  [a] Standard (magnetic flux density only)")
+        print("  [b] Enhanced (with 3D magnetic field distribution)")
+        dataset_type = input("\nSelect dataset type [a/b]: ").strip().lower()
+        
+        compute_mag_field = False
+        if dataset_type == 'b':
+            print("\n⚠️  Warning: Computing magnetic field distribution will:")
+            print("    - Significantly increase computation time (~5x slower)")
+            print("    - Require more storage (~10x larger files)")
+            confirm = input("\nProceed with enhanced dataset? (y/n): ").strip().lower()
+            if confirm == 'y':
+                compute_mag_field = True
+            else:
+                print("Switching to standard dataset...")
+        
         hdf5_path = run_simulations(
             simulator, logger,
             loop_z_range=loop_z_range,
             target_z_range=target_z_range,
             num_target_present=num_target_present,
             num_target_absent=num_target_absent,
-            target_in_soil=False
+            target_in_soil=False,
+            compute_magnetic_field=compute_mag_field
         )
         plotter.load_from_hdf5(hdf5_path)
         
@@ -393,15 +517,19 @@ if __name__ == "__main__":
     elif choice == '3':
         print("\n=== Single Simulation Test ===")
         target_present = input("Include target? (y/n): ").strip().lower() == 'y'
+        compute_mag = input("Compute magnetic field distribution? (y/n): ").strip().lower() == 'y'
         
-        time, decay, label, metadata, _ = simulator.run(
+        time, decay, label, metadata, _, mag_data = simulator.run(
             loop_z_range=loop_z_range,
-            target_z_range=target_z_range
+            target_z_range=target_z_range if target_present else None,
+            compute_magnetic_field=compute_mag
         )
         
         print(f"\n✓ Complete: {label}")
         print(f"  Loop: {metadata['loop_z']:.3f} m")
         print(f"  Target: {metadata['target_z']:.3f} m" if metadata['target_z'] else "  No target")
+        if mag_data:
+            print(f"  Magnetic field: {len(mag_data['field_snapshots'])} snapshots captured")
         
         visualize = input("\nVisualize? (y/n): ").strip().lower()
         if visualize == 'y':

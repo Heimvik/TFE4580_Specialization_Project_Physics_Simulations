@@ -16,6 +16,7 @@ class PiPlotter:
         self.mesh = None
         self.ind_active = None
         self.model_no_target = None
+        self.has_magnetic_field = False
         print(f"PiPlotter initialized. Use load_from_hdf5() to load data.")
     
     def load_from_hdf5(self, hdf5_file):
@@ -25,6 +26,7 @@ class PiPlotter:
             self.num_sims = f['metadata'].attrs['num_simulations']
             self.num_present = f['metadata'].attrs['num_target_present']
             self.num_absent = f['metadata'].attrs['num_target_absent']
+            self.has_magnetic_field = f['metadata'].attrs.get('has_magnetic_field', False)
         
         print(f"\n{'='*70}")
         print(f"Loading data from: {hdf5_file}")
@@ -32,6 +34,8 @@ class PiPlotter:
         print(f"Total simulations: {self.num_sims}")
         print(f"  - Target present: {self.num_present}")
         print(f"  - Target absent: {self.num_absent}")
+        if self.has_magnetic_field:
+            print(f"  - Magnetic field data: Available")
         
         hr = [(0.01, 15), (0.01, 15, 1.3), (0.05, 10, 1.5)]
         hphi = 1
@@ -68,7 +72,8 @@ class PiPlotter:
                     'target_present': sim_group.attrs['target_present'],
                     'label': sim_group.attrs['label'],
                     'time': sim_group['time'][:],
-                    'decay': sim_group['decay'][:]
+                    'decay': sim_group['decay'][:],
+                    'has_magnetic_field': sim_group.attrs.get('has_magnetic_field', False)
                 }
                 if metadata['target_z'] == -999.0:
                     metadata['target_z'] = None
@@ -132,6 +137,8 @@ class PiPlotter:
             print("  [2] Quick Log-Log Plot (first N simulations)")
             print("  [3] Detailed Side View (model grid + configuration)")
             print("  [4] Detailed Top View (model grid + configuration)")
+            if self.has_magnetic_field:
+                print("  [5] 3D Magnetic Field Distribution (slice views)")
             print("  [q] Quit plotting")
             
             choice = input("\nSelect a plot to display (or 'q' to quit): ").strip().lower()
@@ -152,6 +159,9 @@ class PiPlotter:
             elif choice == '4':
                 print("\nShowing: Detailed Top View")
                 self.plot_top_view_detailed()
+            elif choice == '5' and self.has_magnetic_field:
+                print("\nShowing: Magnetic Field Distribution")
+                self.plot_magnetic_field_distribution()
             else:
                 print(f"Invalid choice: '{choice}'. Please select from the menu.")
         
@@ -423,3 +433,139 @@ class PiPlotter:
         
         plt.tight_layout()
         plt.show()
+
+    def plot_magnetic_field_distribution(self):
+        if not self.has_magnetic_field:
+            print("Error: No magnetic field data available in this dataset.")
+            return
+        
+        print("\n" + "="*70)
+        print("3D Magnetic Field Distribution Visualization")
+        print("="*70)
+        print("\nSelect a simulation to visualize:")
+        
+        available_sims = []
+        for idx, meta in enumerate(self.simulations_metadata):
+            if meta.get('has_magnetic_field', False):
+                available_sims.append(idx)
+                if meta['target_present']:
+                    print(f"  [{len(available_sims)}] {meta['label']} (Loop @ {meta['loop_z']:.3f}m, Target @ {meta['target_z']:.3f}m)")
+                else:
+                    print(f"  [{len(available_sims)}] {meta['label']} (Loop @ {meta['loop_z']:.3f}m, No Target)")
+        
+        if not available_sims:
+            print("\nNo simulations with magnetic field data found.")
+            return
+        
+        try:
+            choice = int(input("\nEnter simulation number: ").strip()) - 1
+            if choice < 0 or choice >= len(available_sims):
+                print("Invalid selection.")
+                return
+        except ValueError:
+            print("Invalid input.")
+            return
+        
+        sim_idx = available_sims[choice]
+        meta = self.simulations_metadata[sim_idx]
+        
+        print(f"\nLoading magnetic field data for: {meta['label']}")
+        
+        with h5py.File(self.hdf5_file, 'r') as f:
+            sim_group = f[f'simulations/simulation_{sim_idx}']
+            
+            if 'magnetic_field' not in sim_group:
+                print("Error: Magnetic field data not found for this simulation.")
+                return
+            
+            mag_group = sim_group['magnetic_field']
+            selected_times = mag_group['selected_times'][:]
+            
+            if 'cell_centers' in mag_group:
+                cell_centers = mag_group['cell_centers'][:]
+            elif 'cell_centers_active' in mag_group:
+                cell_centers = mag_group['cell_centers_active'][:]
+            else:
+                print("Error: Cell centers not found in magnetic field data.")
+                return
+            
+            # Dynamically determine number of snapshots
+            snapshots_group = mag_group['snapshots']
+            num_snapshots = len(snapshots_group.keys())
+            
+            field_snapshots = []
+            for i in range(num_snapshots):
+                field_data = mag_group[f'snapshots/field_{i}'][:]
+                field_snapshots.append(field_data)
+        
+        fig, axes = plt.subplots(1, num_snapshots, figsize=(11*num_snapshots, 7))
+        if num_snapshots == 1:
+            axes = [axes]  # Make it iterable if only one subplot
+        fig.suptitle(f'Magnetic Field Distribution: {meta["label"]}', fontsize=16, fontweight='bold')
+        
+        for idx, (ax, field, time_val) in enumerate(zip(axes, field_snapshots, selected_times)):
+            # Field is stored at faces/edges, need to handle dimension mismatch
+            # If field length doesn't match cell centers, use magnitude only where it matches
+            if len(field) != len(cell_centers):
+                # Field is on faces (nF), we have cell centers (nC)
+                # For visualization, we'll use a subset or interpolate
+                # Simple approach: reshape field to 3 components (x,y,z) and take magnitude
+                n_cells = len(cell_centers)
+                if len(field) % 3 == 0:
+                    # Field might be [Fx, Fy, Fz] components concatenated
+                    n_comp = len(field) // 3
+                    if n_comp >= n_cells:
+                        # Take first n_cells of each component
+                        fx = field[:n_cells]
+                        fy = field[n_cells:2*n_cells]
+                        fz = field[2*n_cells:3*n_cells]
+                        field_magnitude = np.sqrt(fx**2 + fy**2 + fz**2)
+                    else:
+                        print(f"Warning: Field size mismatch. Using first {n_cells} values.")
+                        field_magnitude = np.abs(field[:n_cells])
+                else:
+                    # Just truncate to match
+                    print(f"Warning: Field size {len(field)} doesn't match cells {n_cells}. Truncating.")
+                    field_magnitude = np.abs(field[:n_cells])
+            else:
+                field_magnitude = np.abs(field)
+            
+            if cell_centers.shape[1] == 3:
+                r_coords = cell_centers[:, 0]
+                z_coords = cell_centers[:, 2]
+            elif cell_centers.shape[1] == 2:
+                r_coords = cell_centers[:, 0]
+                z_coords = cell_centers[:, 1]
+            else:
+                print(f"Error: Unexpected cell_centers shape: {cell_centers.shape}")
+                return
+            
+            scatter = ax.scatter(r_coords, z_coords, c=field_magnitude, 
+                               s=20, alpha=0.6, cmap='viridis',
+                               norm=plt.matplotlib.colors.LogNorm(vmin=field_magnitude.min()+1e-20, 
+                                                                   vmax=field_magnitude.max()))
+            
+            ax.set_xlabel('Radial Distance [m]', fontsize=11)
+            ax.set_ylabel('Elevation [m]', fontsize=11)
+            ax.set_title(f'Time: {time_val*1e6:.2f} μs', fontsize=12)
+            ax.axhline(0, color='green', linestyle='--', linewidth=1.5, alpha=0.5, label='Ground')
+            ax.axhline(meta['loop_z'], color='blue', linestyle=':', linewidth=1.5, alpha=0.7, label='Loop')
+            
+            if meta['target_z'] is not None:
+                ax.axhline(meta['target_z'], color='red', linestyle=':', linewidth=1.5, alpha=0.7, label='Target')
+            
+            ax.grid(True, alpha=0.3)
+            ax.set_xlim([0, None])
+            
+            cbar = plt.colorbar(scatter, ax=ax)
+            cbar.set_label('|B| [T]', fontsize=10)
+            
+            if idx == 0:
+                ax.legend(loc='lower right', fontsize=8)
+        
+        plt.tight_layout()
+        plt.show()
+        
+        print("\n" + "="*70)
+        print("Magnetic field visualization complete.")
+        print("="*70)
