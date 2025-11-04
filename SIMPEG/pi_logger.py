@@ -95,3 +95,95 @@ class PiLogger:
             print(f"Time samples: {f['metadata'].attrs['time_samples']}")
             print(f"Created: {f['metadata'].attrs['creation_time']}")
             print(f"{'='*70}\n")
+    
+    def save_model(self, model, model_path: str, dataset_name: str, split_type: str):
+        """
+        Save a Keras model to HDF5 format with metadata.
+        
+        Args:
+            model: Keras model to save
+            model_path: Path where the model will be saved
+            dataset_name: Name of the dataset used for training
+            split_type: Type of split ('train', 'val', 'test', or 'full')
+        """
+        print(f"\n{'='*70}")
+        print(f"Saving Model")
+        print(f"{'='*70}")
+        print(f"Model path: {model_path}")
+        print(f"Dataset: {dataset_name}")
+        print(f"Split type: {split_type}")
+        
+        # Save the model
+        model.save(model_path)
+        
+        # Add custom metadata
+        with h5py.File(model_path, 'a') as f:
+            if 'model_metadata' not in f:
+                meta = f.create_group('model_metadata')
+            else:
+                meta = f['model_metadata']
+            
+            meta.attrs['dataset_name'] = dataset_name
+            meta.attrs['split_type'] = split_type
+            meta.attrs['saved_time'] = datetime.now().isoformat()
+        
+        print(f"✓ Model saved successfully!")
+        print(f"{'='*70}\n")
+    
+    def load_model(self, model_path: str):
+        """
+        Load a Keras model from HDF5 format and print metadata.
+        
+        Args:
+            model_path: Path to the saved model
+            
+        Returns:
+            Loaded Keras model
+        """
+        import os
+        from tensorflow import keras
+        
+        if not os.path.exists(model_path):
+            return None
+        
+        print(f"\n{'='*70}")
+        print(f"Loading Model")
+        print(f"{'='*70}")
+        print(f"Model path: {model_path}")
+        
+        # Load the model
+        model = keras.models.load_model(model_path)
+        
+        # Read metadata
+        try:
+            with h5py.File(model_path, 'r') as f:
+                if 'model_metadata' in f:
+                    meta = f['model_metadata']
+                    print(f"Dataset: {meta.attrs.get('dataset_name', 'N/A')}")
+                    print(f"Split type: {meta.attrs.get('split_type', 'N/A')}")
+                    print(f"Saved: {meta.attrs.get('saved_time', 'N/A')}")
+        except Exception as e:
+            print(f"Warning: Could not read metadata: {e}")
+        
+        print(f"✓ Model loaded successfully!")
+        print(f"{'='*70}\n")
+        
+        return model
+    
+    def get_model_path_for_dataset(self, dataset_path: str) -> str:
+        """
+        Generate the model path based on the dataset path.
+        
+        Args:
+            dataset_path: Path to the dataset HDF5 file
+        
+        Returns:
+            Path where the model should be saved
+        """
+        import os
+        
+        # Remove extension and add _model.h5
+        base_path = dataset_path.replace('.h5', '').replace('.hdf5', '')
+        model_path = f"{base_path}_model.h5"
+        
+        return model_path

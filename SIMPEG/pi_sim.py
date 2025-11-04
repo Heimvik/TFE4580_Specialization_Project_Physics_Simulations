@@ -14,6 +14,7 @@ import os
 from pi_config import PiConfig
 from pi_plotter import PiPlotter
 from pi_logger import PiLogger
+from pi_classifier import PiClassifier
 
 
 class PiSimulator:
@@ -26,14 +27,13 @@ class PiSimulator:
         
         xrx, yrx, zrx = np.meshgrid([0], [0], [loop_z_val])
         receiver_locations = np.c_[mkvc(xrx), mkvc(yrx), mkvc(zrx)]
+
+        transmitters_list, receivers_list = [], []
         
-        source_list = []
-        dbzdt_receiver = tdem.receivers.PointMagneticFluxTimeDerivative(
+        receivers_list.append(tdem.receivers.PointMagneticFluxTimeDerivative(
             receiver_locations[0, :], time_channels, "z"
-        )
-        receivers_list = [dbzdt_receiver]
-        
-        source_list.append(
+        ))
+        transmitters_list.append(
             tdem.sources.CircularLoop(
                 receivers_list,
                 location=source_locations[0],
@@ -44,18 +44,17 @@ class PiSimulator:
             )
         )
         
-        survey = tdem.Survey(source_list)
+        survey = tdem.Survey(transmitters_list)
         return survey
 
     def create_conductivity_model(self, mesh, target_z_val, target_in_model):        
-        active_area_z = self.cfg.separation_z
-        ind_active = mesh.cell_centers[:, 2] < active_area_z
-
-        model_map = maps.InjectActiveCells(mesh, ind_active, self.cfg.air_conductivity)
+        ind_active = mesh.cell_centers[:, 2] < self.cfg.separation_z
 
         r = mesh.cell_centers[ind_active, 0]
         z = mesh.cell_centers[ind_active, 2]
 
+        model_map = maps.InjectActiveCells(mesh, ind_active, self.cfg.air_conductivity)
+        
         model = self.cfg.air_conductivity * np.ones(ind_active.sum())
 
         ind_soil = (z < 0)
@@ -173,6 +172,63 @@ class PiSimulator:
         return time_channels, -dpred[0, :], label, simulation_metadata, plotting_metadata
 
 
+def run_simulations(simulator, logger, loop_z_range, target_z_range, 
+                    num_target_present, num_target_absent, target_in_soil=True, output_file=None, compute_magnetic_field=False):    
+    mesh = None
+    total_sims = num_target_present + num_target_absent
+    sim_index = 0
+    
+    if output_file is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        folder_name = f"Simulation_{total_sims}"
+        output_dir = os.path.join("Datasets", folder_name)
+        os.makedirs(output_dir, exist_ok=True)
+        suffix = "_MF" if compute_magnetic_field else ""
+        output_file = os.path.join(output_dir, f"{timestamp}_TP{num_target_present}_TA{num_target_absent}{suffix}.h5")
+    
+    logger.initialize_hdf5(output_file, num_target_present, num_target_absent, has_magnetic_field=compute_magnetic_field)
+    
+    print(f"\n=== Running Simulations (Writing to {output_file}) ===")
+    
+    print()
+    for i in range(num_target_present):
+        time, decay, label, metadata, plot_meta, mag_field_data = simulator.run(
+            loop_z_range, target_z_range, mesh=mesh, compute_magnetic_field=compute_magnetic_field
+        )
+        
+        if mesh is None and plot_meta is not None:
+            mesh = plot_meta['mesh']
+        
+        logger.store_to_hdf5(output_file, sim_index, time, decay, label, metadata, magnetic_field_data=mag_field_data)
+        sim_index += 1
+        print(f"\n\rTarget-Present: {i+1}/{num_target_present}", end='', flush=True)
+    
+    print()
+    
+    for i in range(num_target_absent):
+        if np.random.rand() < 0.5 and target_in_soil:
+            target_z_range = [-simulator.cfg.separation_z, - 0.05 - simulator.cfg.target_height / 2]
+        else:
+            target_z_range = None
+        
+        time, decay, label, metadata, plot_meta, mag_field_data = simulator.run(
+            loop_z_range, target_z_range, mesh=mesh, compute_magnetic_field=compute_magnetic_field
+        )
+        
+        logger.store_to_hdf5(output_file, sim_index, time, decay, label, metadata, magnetic_field_data=mag_field_data)
+        sim_index += 1
+
+        print(f"\n\rTarget-Absent: {i+1}/{num_target_absent}", end='', flush=True)
+
+    print()
+    
+    logger.finalize_hdf5(output_file, len(time))
+    
+    print(f"\n✓ Complete: {total_sims} simulations written to {output_file}")
+    
+    return output_file
+
+
 class PiConditioner:
     def __init__(self):
         pass
@@ -227,62 +283,6 @@ class PiConditioner:
 
     def quantize(self, data, depth, dtype):
         return (np.round(data * 2**depth)).astype(dtype)
-
-
-def run_simulations(simulator, logger, loop_z_range, target_z_range, 
-                   num_target_present, num_target_absent, target_in_soil=True, output_file=None):    
-    mesh = None
-    total_sims = num_target_present + num_target_absent
-    sim_index = 0
-    
-    if output_file is None:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        folder_name = f"Simulation_{total_sims}"
-        output_dir = os.path.join("Datasets", folder_name)
-        os.makedirs(output_dir, exist_ok=True)
-        output_file = os.path.join(output_dir, f"{timestamp}_TP{num_target_present}_TA{num_target_absent}.h5")
-    
-    logger.initialize_hdf5(output_file, num_target_present, num_target_absent)
-    
-    print(f"\n=== Running Simulations (Writing to {output_file}) ===")
-    
-    print()
-    for i in range(num_target_present):
-        time, decay, label, metadata, plot_meta = simulator.run(
-            loop_z_range, target_z_range, mesh=mesh
-        )
-        
-        if mesh is None and plot_meta is not None:
-            mesh = plot_meta['mesh']
-        
-        logger.store_to_hdf5(output_file, sim_index, time, decay, label, metadata)
-        sim_index += 1
-        print(f"\n\rTarget-Present: {i+1}/{num_target_present}", end='', flush=True)
-    
-    print()
-    
-    for i in range(num_target_absent):
-        if np.random.rand() < 0.5 and target_in_soil:
-            target_z_range = [-simulator.cfg.separation_z, - 0.05 - simulator.cfg.target_height / 2]
-        else:
-            target_z_range = None
-        
-        time, decay, label, metadata, plot_meta = simulator.run(
-            loop_z_range, target_z_range, mesh=mesh
-        )
-        
-        logger.store_to_hdf5(output_file, sim_index, time, decay, label, metadata)
-        sim_index += 1
-
-        print(f"\n\rTarget-Absent: {i+1}/{num_target_absent}", end='', flush=True)
-
-    print()
-    
-    logger.finalize_hdf5(output_file, len(time))
-    
-    print(f"\n✓ Complete: {total_sims} simulations written to {output_file}")
-    
-    return output_file
 
 def find_hdf5_files(root_dir='Datasets'):
     hdf5_files = []
@@ -339,98 +339,293 @@ def select_hdf5_file():
             print(f"File not found: {user_input}")
             return None
 
+def get_split_dataset_path(base_path, split_type):
+    """
+    Get the path to a split dataset file.
+    
+    Args:
+        base_path: Original dataset path
+        split_type: 'train', 'val', or 'test'
+    
+    Returns:
+        Path to split dataset if it exists, otherwise None
+    """
+    base_without_ext = base_path.replace('.h5', '').replace('.hdf5', '')
+    split_path = f"{base_without_ext}_{split_type}.h5"
+    
+    if os.path.exists(split_path):
+        return split_path
+    else:
+        return None
+
+def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifier):
+    """Menu for operations on a loaded dataset"""
+    while True:
+        print("\n" + "="*70)
+        print(f"Dataset Operations: {os.path.basename(hdf5_file)}")
+        print("="*70)
+        print("\nOptions:")
+        print("  1. Visualize dataset")
+        print("  2. Print dataset statistics")
+        print("  3. Condition dataset (split train/val/test)")
+        print("  4. Train classifier")
+        print("  5. Validate classifier")
+        print("  6. Test classifier")
+        print("  [b] Back to main menu")
+        
+        choice = input("\nSelect option: ").strip().lower()
+        
+        if choice == '1':
+            # Visualize dataset
+            try:
+                plotter.load_from_hdf5(hdf5_file)
+                plotter.run()
+            except Exception as e:
+                print(f"Error: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        elif choice == '2':
+            # Print statistics
+            try:
+                logger.print_hdf5_metadata(hdf5_file)
+            except Exception as e:
+                print(f"Error: {e}")
+        
+        elif choice == '3':
+            # Condition dataset (split)
+            try:
+                print("\nDataset Split Ratios:")
+                train_ratio = float(input("  Training ratio [0.7]: ").strip() or "0.7")
+                val_ratio = float(input("  Validation ratio [0.15]: ").strip() or "0.15")
+                test_ratio = float(input("  Testing ratio [0.15]: ").strip() or "0.15")
+                
+                train_path, val_path, test_path = classifier.split_dataset(
+                    logger, hdf5_file, train_ratio, val_ratio, test_ratio
+                )
+            except Exception as e:
+                print(f"Error: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        elif choice == '4':
+            # Train classifier
+            try:
+                print(f"\n{'='*70}")
+                print("TRAINING MODE")
+                print(f"{'='*70}")
+                
+                print("\nData source:")
+                print("  [1] Use data from memory")
+                print("  [2] Load from file")
+                data_choice = input("Select data source [1]: ").strip() or "1"
+                
+                if data_choice == '1':
+                    if classifier.X_train is None:
+                        print("\nNo training data in memory. Split dataset first (option 3).")
+                        continue
+                    
+                    num_samples = classifier.X_train.shape[1]
+                    X_train, y_train = classifier.X_train, classifier.y_train
+                    X_val, y_val = classifier.X_val, classifier.y_val
+                    
+                else:
+                    train_path = get_split_dataset_path(hdf5_file, 'train')
+                    if not train_path:
+                        print(f"\nNo training split found.")
+                        continue
+                    
+                    print(f"Loading: {os.path.basename(train_path)}")
+                    time, decay_curves, labels, _, _ = logger.load_from_hdf5(train_path)
+                    num_samples = len(time)
+                    X_train = decay_curves.reshape(decay_curves.shape[0], decay_curves.shape[1], 1)
+                    y_train = labels
+                    
+                    val_path = get_split_dataset_path(hdf5_file, 'val')
+                    if val_path:
+                        _, decay_curves_val, labels_val, _, _ = logger.load_from_hdf5(val_path)
+                        X_val = decay_curves_val.reshape(decay_curves_val.shape[0], decay_curves_val.shape[1], 1)
+                        y_val = labels_val
+                    else:
+                        X_val, y_val = None, None
+                
+                try:
+                    epochs = int(input("\nEpochs [20]: ").strip() or "20")
+                    batch_size = int(input("Batch size [32]: ").strip() or "32")
+                except ValueError:
+                    epochs, batch_size = 20, 32
+                
+                classifier.build_model(num_samples)
+                classifier.train_model(X_train, y_train, X_val, y_val, epochs=epochs, batch_size=batch_size)
+                    
+            except Exception as e:
+                print(f"Error: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        elif choice == '5':
+            # Validate classifier
+            try:
+                if classifier.model is None:
+                    print("\nNo model loaded. Train a model first (option 4).")
+                    continue
+                
+                print(f"\n{'='*70}")
+                print("VALIDATION MODE")
+                print(f"{'='*70}")
+                
+                print("\nData source:")
+                print("  [1] Use data from memory")
+                print("  [2] Load from file")
+                data_choice = input("Select data source [1]: ").strip() or "1"
+                
+                if data_choice == '1':
+                    if classifier.X_val is None:
+                        print("\nNo validation data in memory. Split dataset first (option 3).")
+                        continue
+                    classifier.validate_model(classifier.X_val, classifier.y_val)
+                    
+                else:
+                    val_path = get_split_dataset_path(hdf5_file, 'val')
+                    if not val_path:
+                        print(f"\nNo validation split found.")
+                        continue
+                    
+                    print(f"Loading: {os.path.basename(val_path)}")
+                    _, decay_curves, labels, _, _ = logger.load_from_hdf5(val_path)
+                    X_val = decay_curves.reshape(decay_curves.shape[0], decay_curves.shape[1], 1)
+                    y_val = labels
+                    classifier.validate_model(X_val, y_val)
+                
+            except Exception as e:
+                print(f"Error: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        elif choice == '6':
+            # Test classifier
+            try:
+                if classifier.model is None:
+                    print("\nNo model loaded. Train a model first (option 4).")
+                    continue
+                
+                print(f"\n{'='*70}")
+                print("TESTING MODE")
+                print(f"{'='*70}")
+                
+                print("\nData source:")
+                print("  [1] Use data from memory")
+                print("  [2] Load from file")
+                data_choice = input("Select data source [1]: ").strip() or "1"
+                
+                if data_choice == '1':
+                    if classifier.X_test is None:
+                        print("\nNo test data in memory. Split dataset first (option 3).")
+                        continue
+                    classifier.test_model(classifier.X_test, classifier.y_test)
+                    
+                else:
+                    test_path = get_split_dataset_path(hdf5_file, 'test')
+                    if not test_path:
+                        print(f"\nNo test split found.")
+                        continue
+                    
+                    print(f"Loading: {os.path.basename(test_path)}")
+                    _, decay_curves, labels, _, _ = logger.load_from_hdf5(test_path)
+                    X_test = decay_curves.reshape(decay_curves.shape[0], decay_curves.shape[1], 1)
+                    y_test = labels
+                    classifier.test_model(X_test, y_test)
+                
+            except Exception as e:
+                print(f"Error: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        elif choice == 'b':
+            # Back to main menu
+            break
+        
+        else:
+            print("Invalid option selected.")
+
 if __name__ == "__main__":
     cfg = PiConfig('config.json')
     simulator = PiSimulator(cfg)
     logger = PiLogger()
     plotter = PiPlotter(cfg)
-    
-    loop_z_range = [0.3, 0.3]
-    target_z_range = [0, 0.3]
+    classifier = PiClassifier()
+
     num_target_present = 3
     num_target_absent = 1
     
-    print("\n" + "="*70)
-    print("TDEM Simulation System")
-    print("="*70)
-    print("\nOptions:")
-    print("  1. Generate HDF5 dataset")
-    print("  2. Visualize HDF5 data")
-    print("  3. Single simulation test")
-    print("  4. Print dataset statistics")
-    
-    choice = input("\nSelect option (1-4): ").strip()
-    
-    if choice == '1':
-        hdf5_path = run_simulations(
-            simulator, logger,
-            loop_z_range=loop_z_range,
-            target_z_range=target_z_range,
-            num_target_present=num_target_present,
-            num_target_absent=num_target_absent,
-            target_in_soil=False
-        )
-        plotter.load_from_hdf5(hdf5_path)
+    while True:
+        print("\n" + "="*70)
+        print("TDEM Simulation System - Main Menu")
+        print("="*70)
+        print("\nOptions:")
+        print("  1. Generate new dataset")
+        print("  2. Load existing dataset")
+        print("  [q] Quit")
         
-        visualize = input("\nVisualize results from file? (y/n): ").strip().lower()
-        if visualize == 'y':
-            plotter.run()
+        choice = input("\nSelect option: ").strip().lower()
         
-    elif choice == '2':
-        hdf5_file = select_hdf5_file()
-        
-        if hdf5_file is None:
-            print("Operation cancelled.")
-        else:
-            try:
-                plotter.load_from_hdf5(hdf5_file)
-                plotter.run()
-            except FileNotFoundError:
-                print(f"Error: File '{hdf5_file}' not found.")
-            except Exception as e:
-                print(f"Error: {e}")
-    
-    elif choice == '3':
-        print("\n=== Single Simulation Test ===")
-        target_present = input("Include target? (y/n): ").strip().lower() == 'y'
-        
-        time, decay, label, metadata, _ = simulator.run(
-            loop_z_range=loop_z_range,
-            target_z_range=target_z_range
-        )
-        
-        print(f"\n✓ Complete: {label}")
-        print(f"  Loop: {metadata['loop_z']:.3f} m")
-        print(f"  Target: {metadata['target_z']:.3f} m" if metadata['target_z'] else "  No target")
-        
-        visualize = input("\nVisualize? (y/n): ").strip().lower()
-        if visualize == 'y':
-            fig, ax = plt.subplots(figsize=(10, 6))
-            time_us = time * 1e6
-            color = 'green' if target_present else 'blue'
+        if choice == '1':
+            # Generate new dataset
+            print("\n" + "="*70)
+            print("Generate New Dataset")
+            print("="*70)
             
-            ax.loglog(time_us, decay, linewidth=2, color=color, label=label)
-            ax.set_xlabel('Time [μs]', fontsize=12)
-            ax.set_ylabel('-dBz/dt [T/s]', fontsize=12)
-            ax.set_title(f'TDEM Decay - {"Target Present" if target_present else "No Target"}', 
-                        fontsize=14, fontweight='bold')
-            ax.legend()
-            ax.grid(True, alpha=0.3, which='both')
-            plt.tight_layout()
-            plt.show()
-    
-    elif choice == '4':
-        hdf5_file = select_hdf5_file()
-        
-        if hdf5_file is None:
-            print("Operation cancelled.")
-        else:
+            print("\nDataset Type:")
+            print("  [a] Standard (magnetic flux density only)")
+            print("  [b] Enhanced (with 3D magnetic field distribution)")
+            dataset_type = input("\nSelect dataset type [a/b]: ").strip().lower()
+            
+            compute_mag_field = False
+            if dataset_type == 'b':
+                print("\n⚠️  Warning: Computing magnetic field distribution will:")
+                print("    - Significantly increase computation time (~5x slower)")
+                print("    - Require more storage (~10x larger files)")
+                confirm = input("\nProceed with enhanced dataset? (y/n): ").strip().lower()
+                if confirm == 'y':
+                    compute_mag_field = True
+                else:
+                    print("Switching to standard dataset...")
+            
             try:
-                logger.print_hdf5_metadata(hdf5_file)
-            except FileNotFoundError:
-                print(f"Error: File '{hdf5_file}' not found.")
-            except Exception as e:
-                print(f"Error: {e}")
-    
-    else:
-        print("Invalid option selected.")
+                num_tp = int(input("\nNumber of target-present simulations [3]: ").strip() or "3")
+                num_ta = int(input("Number of target-absent simulations [1]: ").strip() or "1")
+            except ValueError:
+                print("Invalid input, using defaults (3 present, 1 absent)")
+                num_tp = 3
+                num_ta = 1
+            
+            hdf5_path = run_simulations(
+                simulator, logger,
+                loop_z_range=cfg.loop_z_range,
+                target_z_range=cfg.target_z_range,
+                num_target_present=num_tp,
+                num_target_absent=num_ta,
+                target_in_soil=False,
+                compute_magnetic_field=compute_mag_field
+            )
+            
+            # Go to dataset operations menu
+            dataset_operations_menu(hdf5_path, cfg, simulator, logger, plotter, classifier)
+        
+        elif choice == '2':
+            # Load existing dataset
+            hdf5_file = select_hdf5_file()
+            
+            if hdf5_file is None:
+                print("Operation cancelled.")
+            else:
+                # Go to dataset operations menu
+                dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifier)
+        
+        elif choice == 'q':
+            # Quit
+            print("\nExiting TDEM Simulation System...")
+            break
+        
+        else:
+            print("Invalid option selected.")

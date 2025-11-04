@@ -73,6 +73,9 @@ class PiConfig:
         self.target_radius = self._config_data.get('target_radius', 0.0325)  # 3.25 cm
         self.target_height = self._config_data.get('target_height', 0.12)    # 12 cm
         self.target_thickness = self._config_data.get('target_thickness', 0.002)  # 2 mm wall thickness
+
+        self.loop_z_range = self._config_data.get('loop_z_range', [0.3, 0.6])
+        self.target_z_range = self._config_data.get('target_z_range', [0, 0.3])
         
         self.air_conductivity = self._config_data.get('air_conductivity', 1e-8)
         self.soil_conductivity = self._config_data.get('soil_conductivity', 0.4)
