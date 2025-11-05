@@ -40,7 +40,7 @@
     "time_channel_end": 5e-4,
     "time_channel_step": 1e-6,
     
-    "time_steps": [[1e-6, 1024]],
+    "time_steps": [[1e-6, 1100]],
     
     "mesh_dh": 0.02,
     "mesh_dom_width": 2.0,

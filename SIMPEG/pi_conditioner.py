@@ -64,11 +64,8 @@ class PiConditioner:
 
         #Clamp it to 0.7V
         decay_curves = np.clip(decay_curves, 0, 0.7)
-
         decay_curves = self.amplify(time, decay_curves, [[100e-6,10],[300e-6,65]])
-        
         decay_curves = np.clip(decay_curves, 0, 3.3)
-
         decay_curves = self.quantize(decay_curves, depth=12, dtype=np.uint16)        
         
         return time, decay_curves, labels, label_strings, metadata

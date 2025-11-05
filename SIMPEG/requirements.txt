@@ -1,0 +1,20 @@
+# Physics Simulation and Electromagnetics
+simpeg>=0.20.0
+discretize>=0.10.0
+
+# Machine Learning / Deep Learning
+tensorflow>=2.13.0
+keras>=2.13.0
+
+# Scientific Computing
+numpy>=1.24.0
+scipy>=1.10.0
+
+# Data Storage
+h5py>=3.8.0
+
+# Visualization
+matplotlib>=3.7.0
+
+# Utilities
+typing-extensions>=4.5.0

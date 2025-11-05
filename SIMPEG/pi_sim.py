@@ -101,7 +101,7 @@ class PiSimulator:
         target_under_soil = target_z_range is not None and target_z_range[0] < 0
 
         waveform = tdem.sources.StepOffWaveform(off_time=self.cfg.waveform_off_time)
-        time_channels = np.linspace(0, 1024e-6, 1024)
+        time_channels = np.linspace(0, 1100e-6, 1100)
 
         loop_z_val = np.random.uniform(loop_z_range[0], loop_z_range[1])
         while loop_z_val < self.cfg.separation_z:
@@ -256,7 +256,7 @@ def select_hdf5_file():
     print("="*70)
     
     for idx, filepath in enumerate(hdf5_files):
-        file_size = os.path.getsize(filepath) / (1024 * 1024)
+        file_size = os.path.getsize(filepath) / (1100 * 1100)
         modified_time = datetime.fromtimestamp(os.path.getmtime(filepath))
         print(f"  [{idx+1}] {filepath}")
         print(f"      Size: {file_size:.2f} MB | Modified: {modified_time.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -406,45 +406,29 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                 traceback.print_exc()
         
         elif choice == '5':
-            # Train classifier
             try:
                 print(f"\n{'='*70}")
                 print("TRAINING MODE")
                 print(f"{'='*70}")
+
+                train_path = get_split_dataset_path(hdf5_file, 'train')
+                if not train_path:
+                    print(f"\nNo training split found.")
+                    continue
                 
-                print("\nData source:")
-                print("  [1] Use data from memory")
-                print("  [2] Load from file")
-                data_choice = input("Select data source [1]: ").strip() or "1"
+                print(f"Loading: {os.path.basename(train_path)}")
+                time, decay_curves, labels, _, _ = logger.load_from_hdf5(train_path)
+                num_samples = len(time)
+                X_train = decay_curves.reshape(decay_curves.shape[0], decay_curves.shape[1], 1)
+                y_train = labels
                 
-                if data_choice == '1':
-                    if classifier.X_train is None:
-                        print("\nNo training data in memory. Split dataset first (option 3).")
-                        continue
-                    
-                    num_samples = classifier.X_train.shape[1]
-                    X_train, y_train = classifier.X_train, classifier.y_train
-                    X_val, y_val = classifier.X_val, classifier.y_val
-                    
+                val_path = get_split_dataset_path(hdf5_file, 'val')
+                if val_path:
+                    _, decay_curves_val, labels_val, _, _ = logger.load_from_hdf5(val_path)
+                    X_val = decay_curves_val.reshape(decay_curves_val.shape[0], decay_curves_val.shape[1], 1)
+                    y_val = labels_val
                 else:
-                    train_path = get_split_dataset_path(hdf5_file, 'train')
-                    if not train_path:
-                        print(f"\nNo training split found.")
-                        continue
-                    
-                    print(f"Loading: {os.path.basename(train_path)}")
-                    time, decay_curves, labels, _, _ = logger.load_from_hdf5(train_path)
-                    num_samples = len(time)
-                    X_train = decay_curves.reshape(decay_curves.shape[0], decay_curves.shape[1], 1)
-                    y_train = labels
-                    
-                    val_path = get_split_dataset_path(hdf5_file, 'val')
-                    if val_path:
-                        _, decay_curves_val, labels_val, _, _ = logger.load_from_hdf5(val_path)
-                        X_val = decay_curves_val.reshape(decay_curves_val.shape[0], decay_curves_val.shape[1], 1)
-                        y_val = labels_val
-                    else:
-                        X_val, y_val = None, None
+                    X_val, y_val = None, None
                 
                 try:
                     epochs = int(input("\nEpochs [20]: ").strip() or "20")
@@ -461,7 +445,6 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                 traceback.print_exc()
         
         elif choice == '6':
-            # Validate classifier
             try:
                 if classifier.model is None:
                     print("\nNo model loaded. Train a model first (option 5).")
@@ -470,29 +453,17 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                 print(f"\n{'='*70}")
                 print("VALIDATION MODE")
                 print(f"{'='*70}")
-                
-                print("\nData source:")
-                print("  [1] Use data from memory")
-                print("  [2] Load from file")
-                data_choice = input("Select data source [1]: ").strip() or "1"
-                
-                if data_choice == '1':
-                    if classifier.X_val is None:
-                        print("\nNo validation data in memory. Split dataset first (option 3).")
-                        continue
-                    classifier.validate_model(classifier.X_val, classifier.y_val)
                     
-                else:
-                    val_path = get_split_dataset_path(hdf5_file, 'val')
-                    if not val_path:
-                        print(f"\nNo validation split found.")
-                        continue
-                    
-                    print(f"Loading: {os.path.basename(val_path)}")
-                    _, decay_curves, labels, _, _ = logger.load_from_hdf5(val_path)
-                    X_val = decay_curves.reshape(decay_curves.shape[0], decay_curves.shape[1], 1)
-                    y_val = labels
-                    classifier.validate_model(X_val, y_val)
+                val_path = get_split_dataset_path(hdf5_file, 'val')
+                if not val_path:
+                    print(f"\nNo validation split found.")
+                    continue
+                
+                print(f"Loading: {os.path.basename(val_path)}")
+                _, decay_curves, labels, _, _ = logger.load_from_hdf5(val_path)
+                X_val = decay_curves.reshape(decay_curves.shape[0], decay_curves.shape[1], 1)
+                y_val = labels
+                classifier.validate_model(X_val, y_val)
                 
             except Exception as e:
                 print(f"Error: {e}")
@@ -500,7 +471,6 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                 traceback.print_exc()
         
         elif choice == '7':
-            # Test classifier
             try:
                 if classifier.model is None:
                     print("\nNo model loaded. Train a model first (option 5).")
@@ -510,28 +480,16 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                 print("TESTING MODE")
                 print(f"{'='*70}")
                 
-                print("\nData source:")
-                print("  [1] Use data from memory")
-                print("  [2] Load from file")
-                data_choice = input("Select data source [1]: ").strip() or "1"
+                test_path = get_split_dataset_path(hdf5_file, 'test')
+                if not test_path:
+                    print(f"\nNo test split found.")
+                    continue
                 
-                if data_choice == '1':
-                    if classifier.X_test is None:
-                        print("\nNo test data in memory. Split dataset first (option 3).")
-                        continue
-                    classifier.test_model(classifier.X_test, classifier.y_test)
-                    
-                else:
-                    test_path = get_split_dataset_path(hdf5_file, 'test')
-                    if not test_path:
-                        print(f"\nNo test split found.")
-                        continue
-                    
-                    print(f"Loading: {os.path.basename(test_path)}")
-                    _, decay_curves, labels, _, _ = logger.load_from_hdf5(test_path)
-                    X_test = decay_curves.reshape(decay_curves.shape[0], decay_curves.shape[1], 1)
-                    y_test = labels
-                    classifier.test_model(X_test, y_test)
+                print(f"Loading: {os.path.basename(test_path)}")
+                _, decay_curves, labels, _, _ = logger.load_from_hdf5(test_path)
+                X_test = decay_curves.reshape(decay_curves.shape[0], decay_curves.shape[1], 1)
+                y_test = labels
+                classifier.test_model(X_test, y_test)
                 
             except Exception as e:
                 print(f"Error: {e}")
