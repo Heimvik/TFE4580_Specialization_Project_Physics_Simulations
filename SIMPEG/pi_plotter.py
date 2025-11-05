@@ -81,7 +81,7 @@ class PiPlotter:
         
         model = self.model_no_target.copy()
         
-        if target_present and target_z is not None:
+        if target_z is not None:
             inner_radius = self.cfg.target_radius - self.cfg.target_thickness
             if inner_radius < 0:
                 inner_radius = 0
@@ -173,18 +173,18 @@ class PiPlotter:
             color = 'green' if meta['target_present'] else 'blue'
             ax.loglog(time_us, decay, color=color, alpha=0.7, linewidth=1.5, label=meta['label'])
         
-        ax.set_xlabel('Time [μs]', fontsize=14)
-        ax.set_ylabel(r'$|\frac{dB_z}{dt}|$ [T/s]', fontsize=14, rotation=0)
-        ax.set_title(f'TDEM Decay Curves (first {n} simulations)', fontsize=16, fontweight='bold')
+        ax.set_xlabel('Time [μs]', fontsize=18)
+        ax.set_ylabel(r'$\left|\frac{\partial B_z}{\partial t}\right|$ [T/s]', fontsize=18)
+        ax.tick_params(labelsize=18)
         
         if n <= 10:
-            ax.legend(fontsize=9, ncol=2)
+            ax.legend(fontsize=16, ncol=2)
         else:
             legend_elements = [
                 Line2D([0], [0], color='green', lw=2, label='Target Present'),
                 Line2D([0], [0], color='blue', lw=2, label='Target Absent')
             ]
-            ax.legend(handles=legend_elements, fontsize=10)
+            ax.legend(handles=legend_elements, fontsize=16)
         
         ax.grid(True, alpha=0.3, which='both')
         plt.tight_layout()
@@ -199,7 +199,7 @@ class PiPlotter:
         
         for idx, meta in enumerate(self.simulations_metadata):
             if meta['target_present']:
-                print(f"  [{idx+1}] {meta['label']} (Loop @ {meta['loop_z']:.3f}m, Target @ {meta['target_z']:.3f}m)")
+                print(f"  [{idx+1}] {meta['label']} (Loop @ {meta['loop_z']:.3f}m, Target at {meta['target_z']:.3f}m)")
             else:
                 print(f"  [{idx+1}] {meta['label']} (Loop @ {meta['loop_z']:.3f}m, No Target)")
         
@@ -237,14 +237,13 @@ class PiPlotter:
         print(f"\nPlotting {len(selected_indices)} simulation(s)...")
         
         fig = plt.figure(figsize=(24, 11))
-        gs = fig.add_gridspec(1, 2, width_ratios=[1, 3], wspace=0.25)
+        gs = fig.add_gridspec(1, 2, width_ratios=[2, 3], wspace=0.07)
         ax_model = fig.add_subplot(gs[0, 0])
         ax_decay = fig.add_subplot(gs[0, 1])
         
         r = self.mesh.cell_centers[self.ind_active, 0]
         z = self.mesh.cell_centers[self.ind_active, 2]
         
-        ax_model.set_title('Physical Configurations (Side View)', fontsize=18, fontweight='bold', pad=15)
         ax_model.set_aspect('equal')
         
         ax_model.axhline(0, color='darkgreen', linewidth=2, linestyle='--', alpha=0.7, label='Ground Level')
@@ -257,32 +256,21 @@ class PiPlotter:
             
             if meta['target_z'] is not None:
                 ax_model.scatter([self.cfg.target_radius/2], [meta['target_z']], 
-                               c=[color], s=150, alpha=0.9,
-                               marker='X', edgecolors='black', linewidths=2.0,
-                               label=f"T{plot_idx+1}")
+                        c=[color], s=150, alpha=0.9,
+                        marker='X', edgecolors='black', linewidths=2.0)
             
             loop_radius = float(self.cfg.tx_radius)
             ax_model.plot([0, loop_radius], [meta['loop_z'], meta['loop_z']],
-                         color=color, linewidth=4, marker='o', markersize=10,
-                         markerfacecolor=color, markeredgecolor='black', markeredgewidth=1.5,
-                         label=f"L{plot_idx+1}")
+                 color=color, linewidth=4, marker='o', markersize=10,
+                 markerfacecolor=color, markeredgecolor='black', markeredgewidth=1.5,
+                 label=f"{meta['label']}")
         
-        ax_model.set_xlabel('Radial Distance [m]', fontsize=15)
-        ax_model.set_ylabel('Depth [m]', fontsize=15)
-        ax_model.tick_params(labelsize=12)
-        
-        num_items = len(selected_indices) * 2 + 2
-        if num_items > 15:
-            ax_model.legend(loc='upper right', fontsize=7, ncol=4, framealpha=0.9, columnspacing=0.5)
-        elif num_items > 10:
-            ax_model.legend(loc='upper right', fontsize=7, ncol=3, framealpha=0.9)
-        else:
-            ax_model.legend(loc='upper right', fontsize=8, ncol=2, framealpha=0.9)
+        ax_model.set_xlabel('Radial Distance [m]', fontsize=18)
+        ax_model.set_ylabel('Depth [m]', fontsize=18)
+        ax_model.tick_params(labelsize=18)
         
         ax_model.grid(True, alpha=0.3)
-        ax_model.set_xlim([0, 0.5])
-        
-        ax_decay.set_title('TDEM Decay Curves (Log-Log)', fontsize=18, fontweight='bold', pad=15)
+        ax_model.set_xlim([0, self.cfg.tx_radius + 0.1])
         
         for plot_idx, sim_idx in enumerate(selected_indices):
             meta = self.simulations_metadata[sim_idx]
@@ -292,22 +280,30 @@ class PiPlotter:
             decay = np.abs(meta['decay'])
             
             ax_decay.loglog(time_us, decay, color=color, linewidth=2.5, alpha=0.9,
-                           label=f"{plot_idx+1}: {meta['label']}", marker='.')
+                   label=f"{meta['label']}", marker='.')
         
-        ax_decay.set_xlabel('Time [μs]', fontsize=15)
-        ax_decay.set_ylabel('|dBz/dt| [T/s]', fontsize=15)
-        ax_decay.tick_params(labelsize=12)
-        
-        if len(selected_indices) > 15:
-            ax_decay.legend(loc='lower left', fontsize=7, ncol=2, framealpha=0.9)
-        elif len(selected_indices) > 8:
-            ax_decay.legend(loc='lower left', fontsize=8, ncol=1, framealpha=0.9)
-        else:
-            ax_decay.legend(loc='lower left', fontsize=9, framealpha=0.9)
+        ax_decay.set_xlabel('Time [μs]', fontsize=18)
+        ax_decay.set_ylabel(r'$\left|\frac{\partial B_z}{\partial t}\right|$ [T/s]', fontsize=18)
+        ax_decay.tick_params(labelsize=18)
         
         ax_decay.grid(True, alpha=0.3, which='both')
         
-        plt.subplots_adjust(left=0.06, right=0.98, top=0.95, bottom=0.08, wspace=0.25)
+        handles, labels = ax_model.get_legend_handles_labels()
+        
+        n_items = len(labels)
+        if n_items > 15:
+            ncol = 6
+        elif n_items > 10:
+            ncol = 5
+        elif n_items > 6:
+            ncol = 4
+        else:
+            ncol = 3
+        
+        fig.legend(handles, labels, fontsize=16, loc ='lower center',
+                  ncol=ncol, framealpha=0.9)
+        
+        plt.subplots_adjust(left=0.06, right=0.98, top=0.98, bottom=0.12, wspace=0.25)
         plt.show()
     
     def plot_side_view_detailed(self):
@@ -337,22 +333,21 @@ class PiPlotter:
         model = self._reconstruct_model(meta['target_z'], meta['target_present'])
         
         fig, ax = plt.subplots(figsize=(10, 8))
-        ax.set_title(f'Side View: {meta["label"]}', fontsize=14, fontweight='bold')
         
         plotting_map = maps.InjectActiveCells(self.mesh, self.ind_active, np.nan)
         log_model = np.log10(model)
         self.mesh.plot_image(plotting_map * log_model, ax=ax, grid=True,
-                           clim=(np.log10(self.cfg.air_conductivity), 
-                                np.log10(self.cfg.aluminum_conductivity)))
+                            clim=(np.log10(self.cfg.air_conductivity), 
+                                  np.log10(self.cfg.aluminum_conductivity)))
         
-        ax.axhline(y=0, color='green', linestyle='--', linewidth=2, alpha=0.7, label='Ground surface')
+        ax.axhline(y=0, color='green', linestyle='-', linewidth=2, alpha=0.7, label='Ground surface')
         
         loop_radius = float(self.cfg.tx_radius)
         ax.plot([0, loop_radius], [meta['loop_z'], meta['loop_z']], 
                color='blue', linewidth=2.5, marker='o', markersize=8,
-               label=f'TX/RX Loop (z={meta["loop_z"]:.3f}m)')
+               label=f'TX/RX coil (z={meta["loop_z"]:.3f}m)')
         
-        if meta['target_present'] and meta['target_z'] is not None:
+        if meta['target_z'] is not None:
             target_top = meta['target_z'] + self.cfg.target_height/2
             target_bottom = meta['target_z'] - self.cfg.target_height/2
             target_radius = self.cfg.target_radius
@@ -363,9 +358,10 @@ class PiPlotter:
             ax.add_patch(plt.Rectangle((0, target_bottom), target_radius, self.cfg.target_height,
                                       fill=False, edgecolor='black', linewidth=2, linestyle='-'))
         
-        ax.set_xlabel('Radial Distance [m]', fontsize=12)
-        ax.set_ylabel('Elevation [m]', fontsize=12)
-        ax.legend(loc='lower right', fontsize=9)
+        ax.set_xlabel('Radial Distance [m]', fontsize=18)
+        ax.set_ylabel('Elevation [m]', fontsize=18)
+        ax.tick_params(labelsize=18)
+        ax.legend(fontsize=16)
         ax.grid(True, alpha=0.3)
         ax.set_xlim([0, None])
         
@@ -396,7 +392,6 @@ class PiPlotter:
         meta = self.simulations_metadata[choice]
         
         fig, ax = plt.subplots(figsize=(10, 10))
-        ax.set_title(f'Top View: {meta["label"]}', fontsize=14, fontweight='bold')
         ax.set_aspect('equal')
         
         target_r = float(self.cfg.target_radius)
@@ -414,9 +409,10 @@ class PiPlotter:
         
         ax.set_xlim([-loop_radius*1.3, loop_radius*1.3])
         ax.set_ylim([-loop_radius*1.3, loop_radius*1.3])
-        ax.set_xlabel('X [m]', fontsize=12)
-        ax.set_ylabel('Y [m]', fontsize=12)
-        ax.legend(loc='upper right', fontsize=9)
+        ax.set_xlabel('X [m]', fontsize=18)
+        ax.set_ylabel('Y [m]', fontsize=18)
+        ax.tick_params(labelsize=18)
+        ax.legend(loc='upper right', fontsize=16)
         ax.grid(True, alpha=0.3)
         ax.axhline(0, color='k', linewidth=0.5, alpha=0.3)
         ax.axvline(0, color='k', linewidth=0.5, alpha=0.3)

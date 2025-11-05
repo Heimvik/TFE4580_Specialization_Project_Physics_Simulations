@@ -141,9 +141,9 @@ class PiSimulator:
         dpred = np.reshape(dpred, (1, len(time_channels)))
         
         if target_over_soil or target_under_soil:
-            label = f"L{loop_z_val:.2f}-T{target_z_val:.2f}"
+            label = f"Coil at {loop_z_val:.2f}, object at {target_z_val:.2f}"
         else:
-            label = f"L{loop_z_val:.2f}-T-"
+            label = f"Coil at {loop_z_val:.2f}, no object present"
 
         simulation_metadata = {
             'loop_z': loop_z_val,
@@ -204,7 +204,6 @@ def run_simulations(simulator, logger, loop_z_range, target_z_range,
         print(f"\n\rTarget-Present: {i+1}/{num_target_present}", end='', flush=True)
     
     print()
-    
     for i in range(num_target_absent):
         if np.random.rand() < probability_of_target_in_soil:
             target_z_range = [-simulator.cfg.separation_z, - simulator.cfg.target_height / 2]
@@ -561,7 +560,7 @@ if __name__ == "__main__":
                 target_z_range=cfg.target_z_range,
                 num_target_present=num_tp,
                 num_target_absent=num_ta,
-                probability_of_target_in_soil=1.0,
+                probability_of_target_in_soil=0.5,
             )
             
             # Go to dataset operations menu

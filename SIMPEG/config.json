@@ -3,15 +3,15 @@
     "tx_x": 0.0,
     "tx_y": 0.0,
     "tx_z": 0.2,
-    "tx_current": 20.0,
-    "tx_radius": 0.4,
+    "tx_current": 1.0,
+    "tx_radius": 0.2,
     "tx_n_turns": 30,
     
     "rx_num": 1,
     "rx_x": 0.0,
     "rx_y": 0.0,
     "rx_z": 0.2,
-    "rx_radius": 0.4,
+    "rx_radius": 0.2,
     "rx_n_turns": 30,
 
     "separation_z": 0.3,
@@ -23,7 +23,7 @@
     "target_height": 0.12,
     "target_thickness": 0.005,
 
-    "loop_z_range": [0.3, 0.6],
+    "loop_z_range": [0.3, 0.4],
     "target_z_range": [0, 0.3],
 
     "air_conductivity": 1e-8,
