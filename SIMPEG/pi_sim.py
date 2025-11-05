@@ -15,6 +15,7 @@ from pi_config import PiConfig
 from pi_plotter import PiPlotter
 from pi_logger import PiLogger
 from pi_classifier import PiClassifier
+from pi_conditioner import PiConditioner
 
 
 class PiSimulator:
@@ -173,7 +174,7 @@ class PiSimulator:
 
 
 def run_simulations(simulator, logger, loop_z_range, target_z_range, 
-                    num_target_present, num_target_absent, target_in_soil=True, output_file=None, compute_magnetic_field=False):    
+                    num_target_present, num_target_absent, probability_of_target_in_soil, output_file=None):    
     mesh = None
     total_sims = num_target_present + num_target_absent
     sim_index = 0
@@ -183,39 +184,38 @@ def run_simulations(simulator, logger, loop_z_range, target_z_range,
         folder_name = f"Simulation_{total_sims}"
         output_dir = os.path.join("Datasets", folder_name)
         os.makedirs(output_dir, exist_ok=True)
-        suffix = "_MF" if compute_magnetic_field else ""
-        output_file = os.path.join(output_dir, f"{timestamp}_TP{num_target_present}_TA{num_target_absent}{suffix}.h5")
+        output_file = os.path.join(output_dir, f"{timestamp}_TP{num_target_present}_TA{num_target_absent}.h5")
     
-    logger.initialize_hdf5(output_file, num_target_present, num_target_absent, has_magnetic_field=compute_magnetic_field)
+    logger.initialize_hdf5(output_file, num_target_present, num_target_absent)
     
     print(f"\n=== Running Simulations (Writing to {output_file}) ===")
     
     print()
     for i in range(num_target_present):
-        time, decay, label, metadata, plot_meta, mag_field_data = simulator.run(
-            loop_z_range, target_z_range, mesh=mesh, compute_magnetic_field=compute_magnetic_field
+        time, decay, label, metadata, plot_meta = simulator.run(
+            loop_z_range, target_z_range, mesh=mesh
         )
         
         if mesh is None and plot_meta is not None:
             mesh = plot_meta['mesh']
         
-        logger.store_to_hdf5(output_file, sim_index, time, decay, label, metadata, magnetic_field_data=mag_field_data)
+        logger.store_to_hdf5(output_file, sim_index, time, decay, label, metadata)
         sim_index += 1
         print(f"\n\rTarget-Present: {i+1}/{num_target_present}", end='', flush=True)
     
     print()
     
     for i in range(num_target_absent):
-        if np.random.rand() < 0.5 and target_in_soil:
-            target_z_range = [-simulator.cfg.separation_z, - 0.05 - simulator.cfg.target_height / 2]
+        if np.random.rand() < probability_of_target_in_soil:
+            target_z_range = [-simulator.cfg.separation_z, - simulator.cfg.target_height / 2]
         else:
             target_z_range = None
         
-        time, decay, label, metadata, plot_meta, mag_field_data = simulator.run(
-            loop_z_range, target_z_range, mesh=mesh, compute_magnetic_field=compute_magnetic_field
+        time, decay, label, metadata, plot_meta = simulator.run(
+            loop_z_range, target_z_range, mesh=mesh
         )
         
-        logger.store_to_hdf5(output_file, sim_index, time, decay, label, metadata, magnetic_field_data=mag_field_data)
+        logger.store_to_hdf5(output_file, sim_index, time, decay, label, metadata)
         sim_index += 1
 
         print(f"\n\rTarget-Absent: {i+1}/{num_target_absent}", end='', flush=True)
@@ -227,77 +227,6 @@ def run_simulations(simulator, logger, loop_z_range, target_z_range,
     print(f"\n✓ Complete: {total_sims} simulations written to {output_file}")
     
     return output_file
-
-
-class PiConditioner:
-    def __init__(self):
-        pass
-
-    def add_noise(self, time, data, late_time, snr_db):
-        if isinstance(time, list):
-            time = time[0]
-        
-        if hasattr(time, 'ndim') and time.ndim > 1:
-            time = time[0]
-        
-        print(f"Time range: {time[0]:.6e} to {time[-1]:.6e}")
-        
-        if late_time < time[0]:
-            raise ValueError("late_time must be within the range of time array")
-        if late_time > time[-1]:
-            raise ValueError("late_time must be within the range of time array")
-
-        idx = np.where(time >= late_time)[0]
-        if len(idx) == 0:
-            raise ValueError("late_time is beyond the maximum time in the array")
-        idx = idx[0]
-
-        signal_power = np.mean(data[idx:]**2)
-        snr_linear = 10**(snr_db / 10)
-        noise_power = signal_power / snr_linear
-        noise_std = np.sqrt(noise_power)
-
-        noise = np.random.normal(0, noise_std, size=data.shape)
-        return data + noise
-        
-
-    def amplify(self, time, data, time_gain):
-        if isinstance(time, list):
-            time = time[0]
-        
-        if hasattr(time, 'ndim') and time.ndim > 1:
-            time = time[0]
-        
-        time_gain = np.array(time_gain)
-        if time_gain.size > 0:
-            time_gain = time_gain[np.argsort(time_gain[:, 0])]
-        gain = np.ones_like(time)
-        for t, g in time_gain:
-            mask = time >= t
-            gain[mask] = g
-        return data * gain
-
-    def normalize(self, data, max=None):
-        data_min = np.min(data)
-        data_max = np.max(data)
-        data_normalized = (data - data_min) / (data_max - data_min + 1e-10)
-        return data_normalized
-    
-    def normalize_for_training(self, data):
-        """Normalize decay curves for neural network training using log-scale normalization"""
-        # Take log of absolute values to handle orders of magnitude variation
-        data_log = np.log10(np.abs(data) + 1e-20)  # Add small constant to avoid log(0)
-        #data_log = data
-        
-        # Normalize to [0, 1] range
-        data_min = np.min(data_log)
-        data_max = np.max(data_log)
-        data_normalized = (data_log - data_min) / (data_max - data_min + 1e-10)
-        
-        return data_normalized, {'min': data_min, 'max': data_max}
-
-    def quantize(self, data, depth, dtype):
-        return (np.round(data * 2**depth)).astype(dtype)
 
 def find_hdf5_files(root_dir='Datasets'):
     hdf5_files = []
@@ -373,7 +302,7 @@ def get_split_dataset_path(base_path, split_type):
     else:
         return None
 
-def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifier):
+def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifier, conditioner):
     """Menu for operations on a loaded dataset"""
     while True:
         print("\n" + "="*70)
@@ -382,10 +311,11 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
         print("\nOptions:")
         print("  1. Visualize dataset")
         print("  2. Print dataset statistics")
-        print("  3. Condition dataset (split train/val/test)")
-        print("  4. Train classifier")
-        print("  5. Validate classifier")
-        print("  6. Test classifier")
+        print("  3. Split dataset")
+        print("  4. Condition dataset")
+        print("  5. Train classifier")
+        print("  6. Validate classifier")
+        print("  7. Test classifier")
         print("  [b] Back to main menu")
         
         choice = input("\nSelect option: ").strip().lower()
@@ -408,7 +338,7 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                 print(f"Error: {e}")
         
         elif choice == '3':
-            # Condition dataset (split)
+            # Split and load dataset
             try:
                 print("\nDataset Split Ratios:")
                 train_ratio = float(input("  Training ratio [0.7]: ").strip() or "0.7")
@@ -416,7 +346,7 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                 test_ratio = float(input("  Testing ratio [0.15]: ").strip() or "0.15")
                 
                 train_path, val_path, test_path = classifier.split_dataset(
-                    logger, hdf5_file, train_ratio, val_ratio, test_ratio
+                    logger, hdf5_file, train_ratio, val_ratio, test_ratio, save_to_file=True
                 )
             except Exception as e:
                 print(f"Error: {e}")
@@ -424,6 +354,58 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                 traceback.print_exc()
         
         elif choice == '4':
+            # Condition dataset
+            try:
+                print(f"\n{'='*70}")
+                print("CONDITION DATASET")
+                print(f"{'='*70}")
+                
+                print("\nLoading dataset...")
+                time, decay_curves, labels, label_strings, metadata = logger.load_from_hdf5(hdf5_file)
+                
+                print("Applying conditioning (log-scale + min-max normalization)...")
+                time_c, decay_c, labels_c, label_strings_c, metadata_c = conditioner.condition_dataset(
+                    time, decay_curves, labels, label_strings, metadata
+                )
+                
+                # Save conditioned dataset
+                base_name = os.path.basename(hdf5_file).replace('.h5', '')
+                base_dir = os.path.dirname(hdf5_file)
+                conditioned_file = os.path.join(base_dir, f"{base_name}_conditioned.h5")
+                
+                print(f"\nSaving conditioned dataset to: {conditioned_file}")
+                logger.initialize_hdf5(conditioned_file, metadata_c['num_target_present'], 
+                                     metadata_c['num_target_absent'])
+                
+                for i in range(len(decay_c)):
+                    sim_metadata = {
+                        'loop_z': metadata_c['loop_z'][i],
+                        'target_z': metadata_c['target_z'][i],
+                        'target_present': labels_c[i] == 1,
+                        'label': label_strings_c[i]
+                    }
+                    logger.store_to_hdf5(conditioned_file, i, time_c, decay_c[i], 
+                                       label_strings_c[i], sim_metadata)
+                
+                logger.finalize_hdf5(conditioned_file, len(time_c))
+                
+                print(f"\n✓ Conditioned dataset saved!")
+                print(f"  File: {os.path.basename(conditioned_file)}")
+                print(f"  Normalization: log10 + min-max")
+                
+                switch = input(f"\nSwitch to conditioned dataset for further operations? (y/n) [y]: ").strip().lower() or 'y'
+                if switch == 'y':
+                    hdf5_file = conditioned_file
+                    print(f"✓ Now using: {os.path.basename(hdf5_file)}")
+                else:
+                    print(f"Continuing with original dataset: {os.path.basename(hdf5_file)}")
+                
+            except Exception as e:
+                print(f"Error: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        elif choice == '5':
             # Train classifier
             try:
                 print(f"\n{'='*70}")
@@ -453,18 +435,13 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                     print(f"Loading: {os.path.basename(train_path)}")
                     time, decay_curves, labels, _, _ = logger.load_from_hdf5(train_path)
                     num_samples = len(time)
-                    
-                    # Normalize data
-                    decay_normalized, norm_params = conditioner.normalize_for_training(decay_curves)
-                    classifier.norm_params = norm_params
-                    X_train = decay_normalized.reshape(decay_curves.shape[0], decay_curves.shape[1], 1)
+                    X_train = decay_curves.reshape(decay_curves.shape[0], decay_curves.shape[1], 1)
                     y_train = labels
                     
                     val_path = get_split_dataset_path(hdf5_file, 'val')
                     if val_path:
                         _, decay_curves_val, labels_val, _, _ = logger.load_from_hdf5(val_path)
-                        decay_val_normalized, _ = conditioner.normalize_for_training(decay_curves_val)
-                        X_val = decay_val_normalized.reshape(decay_curves_val.shape[0], decay_curves_val.shape[1], 1)
+                        X_val = decay_curves_val.reshape(decay_curves_val.shape[0], decay_curves_val.shape[1], 1)
                         y_val = labels_val
                     else:
                         X_val, y_val = None, None
@@ -483,11 +460,11 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                 import traceback
                 traceback.print_exc()
         
-        elif choice == '5':
+        elif choice == '6':
             # Validate classifier
             try:
                 if classifier.model is None:
-                    print("\nNo model loaded. Train a model first (option 4).")
+                    print("\nNo model loaded. Train a model first (option 5).")
                     continue
                 
                 print(f"\n{'='*70}")
@@ -513,8 +490,7 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                     
                     print(f"Loading: {os.path.basename(val_path)}")
                     _, decay_curves, labels, _, _ = logger.load_from_hdf5(val_path)
-                    decay_normalized, _ = conditioner.normalize_for_training(decay_curves)
-                    X_val = decay_normalized.reshape(decay_curves.shape[0], decay_curves.shape[1], 1)
+                    X_val = decay_curves.reshape(decay_curves.shape[0], decay_curves.shape[1], 1)
                     y_val = labels
                     classifier.validate_model(X_val, y_val)
                 
@@ -523,11 +499,11 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                 import traceback
                 traceback.print_exc()
         
-        elif choice == '6':
+        elif choice == '7':
             # Test classifier
             try:
                 if classifier.model is None:
-                    print("\nNo model loaded. Train a model first (option 4).")
+                    print("\nNo model loaded. Train a model first (option 5).")
                     continue
                 
                 print(f"\n{'='*70}")
@@ -553,8 +529,7 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                     
                     print(f"Loading: {os.path.basename(test_path)}")
                     _, decay_curves, labels, _, _ = logger.load_from_hdf5(test_path)
-                    decay_normalized, _ = conditioner.normalize_for_training(decay_curves)
-                    X_test = decay_normalized.reshape(decay_curves.shape[0], decay_curves.shape[1], 1)
+                    X_test = decay_curves.reshape(decay_curves.shape[0], decay_curves.shape[1], 1)
                     y_test = labels
                     classifier.test_model(X_test, y_test)
                 
@@ -575,11 +550,11 @@ if __name__ == "__main__":
     simulator = PiSimulator(cfg)
     logger = PiLogger()
     plotter = PiPlotter(cfg)
-    conditioner = PiConditioner()
+    conditioner = PiConditioner(cfg)
     classifier = PiClassifier(conditioner)
 
-    num_target_present = 3
-    num_target_absent = 1
+    num_target_present = 2000
+    num_target_absent = 2000
     
     while True:
         print("\n" + "="*70)
@@ -628,12 +603,11 @@ if __name__ == "__main__":
                 target_z_range=cfg.target_z_range,
                 num_target_present=num_tp,
                 num_target_absent=num_ta,
-                target_in_soil=False,
-                compute_magnetic_field=compute_mag_field
+                probability_of_target_in_soil=1.0,
             )
             
             # Go to dataset operations menu
-            dataset_operations_menu(hdf5_path, cfg, simulator, logger, plotter, classifier)
+            dataset_operations_menu(hdf5_path, cfg, simulator, logger, plotter, classifier, conditioner)
         
         elif choice == '2':
             # Load existing dataset
@@ -643,7 +617,7 @@ if __name__ == "__main__":
                 print("Operation cancelled.")
             else:
                 # Go to dataset operations menu
-                dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifier)
+                dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifier, conditioner)
         
         elif choice == 'q':
             # Quit

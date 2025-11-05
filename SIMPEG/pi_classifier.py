@@ -81,19 +81,12 @@ class PiClassifier():
             {**metadata, 'num_simulations': len(test_idx)}
         )
         
-        # Normalize data using conditioner
-        if self.conditioner:
-            decay_normalized, self.norm_params = self.conditioner.normalize_for_training(decay_curves)
-            print(f"\n✓ Data normalized: log-scale + min-max [range: {self.norm_params['min']:.2f} to {self.norm_params['max']:.2f}]")
-        else:
-            decay_normalized = decay_curves
-            print(f"\n⚠️  Warning: No conditioner provided, using raw data")
-        
-        self.X_train = decay_normalized[train_idx].reshape(len(train_idx), decay_curves.shape[1], 1)
+        # Prepare arrays for training - data should already be conditioned before split
+        self.X_train = decay_curves[train_idx].reshape(len(train_idx), decay_curves.shape[1], 1)
         self.y_train = labels[train_idx]
-        self.X_val = decay_normalized[val_idx].reshape(len(val_idx), decay_curves.shape[1], 1)
+        self.X_val = decay_curves[val_idx].reshape(len(val_idx), decay_curves.shape[1], 1)
         self.y_val = labels[val_idx]
-        self.X_test = decay_normalized[test_idx].reshape(len(test_idx), decay_curves.shape[1], 1)
+        self.X_test = decay_curves[test_idx].reshape(len(test_idx), decay_curves.shape[1], 1)
         self.y_test = labels[test_idx]
         
         print("\n✓ Dataset split complete! Data stored in memory.")
@@ -104,19 +97,16 @@ class PiClassifier():
             base_dir = os.path.dirname(source_path)
             base_name = os.path.basename(source_path).replace('.h5', '')
             
-            # Create dataset folder
-            dataset_folder = os.path.join(base_dir, base_name)
-            os.makedirs(dataset_folder, exist_ok=True)
-            
-            train_path = os.path.join(dataset_folder, f"{base_name}_train.h5")
-            val_path = os.path.join(dataset_folder, f"{base_name}_val.h5")
-            test_path = os.path.join(dataset_folder, f"{base_name}_test.h5")
+            # Save split files in the same directory as the source file
+            train_path = os.path.join(base_dir, f"{base_name}_train.h5")
+            val_path = os.path.join(base_dir, f"{base_name}_val.h5")
+            test_path = os.path.join(base_dir, f"{base_name}_test.h5")
             
             self._save_split_dataset(source_path, train_path, train_idx, "Training")
             self._save_split_dataset(source_path, val_path, val_idx, "Validation")
             self._save_split_dataset(source_path, test_path, test_idx, "Testing")
             
-            print(f"\n✓ Files saved in: {dataset_folder}")
+            print(f"\n✓ Files saved in: {base_dir}")
             print(f"  - Training set: {os.path.basename(train_path)}")
             print(f"  - Validation set: {os.path.basename(val_path)}")
             print(f"  - Testing set: {os.path.basename(test_path)}")
@@ -127,6 +117,14 @@ class PiClassifier():
     
     def _save_split_dataset(self, source_path, dest_path, indices, split_name):
         """Helper function to save a subset of the dataset"""
+        # Ensure the destination directory exists
+        dest_dir = os.path.dirname(os.path.abspath(dest_path))
+        try:
+            os.makedirs(dest_dir, exist_ok=True)
+        except Exception as e:
+            print(f"  Warning: Could not create directory {dest_dir}: {e}")
+            raise
+        
         with h5py.File(source_path, 'r') as f_src:
             with h5py.File(dest_path, 'w') as f_dst:
                 # Copy metadata
