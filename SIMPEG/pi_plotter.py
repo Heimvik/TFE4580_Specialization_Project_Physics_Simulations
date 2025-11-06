@@ -438,7 +438,7 @@ class PiPlotter:
         print("="*70)
         
         # Get measured data file path
-        measured_file = input("\nEnter path to measured HDF5 file (e.g., Measure/dataset.h5): ").strip()
+        measured_file = input("\nEnter path to measured HDF5 file [Datasets/Measured_1/dataset.h5]: ").strip() or "Datasets/Measured_1/dataset.h5"
         
         # Check if file exists
         import os
@@ -588,18 +588,33 @@ class PiPlotter:
         print("\n" + "-"*70)
         print("MEASURED DATA")
         print("-"*70)
+        print("Note: Load at least one measured dataset to compare with simulations")
         
         while True:
             add_measured = input("\nAdd measured data file? (y/n) [y]: ").strip().lower() or 'y'
             if add_measured != 'y':
+                if len(measured_data) == 0:
+                    print("Warning: No measured data loaded. You need at least one measured dataset.")
+                    continue_anyway = input("Continue without measured data? (y/n) [n]: ").strip().lower() or 'n'
+                    if continue_anyway != 'y':
+                        continue
                 break
             
-            measured_file = input("Enter path to measured HDF5 file: ").strip()
+            measured_file = input("Enter path to measured HDF5 file [Datasets/Measured_1/dataset.h5]: ").strip() or "Datasets/Measured_1/dataset.h5"
             
             import os
+            # Try with absolute path if relative doesn't work
             if not os.path.exists(measured_file):
-                print(f"Error: File not found: {measured_file}")
-                continue
+                abs_measured_file = os.path.abspath(measured_file)
+                if os.path.exists(abs_measured_file):
+                    measured_file = abs_measured_file
+                else:
+                    print(f"Error: File not found: {measured_file}")
+                    print(f"  Current directory: {os.getcwd()}")
+                    retry = input("  Try another path? (y/n) [y]: ").strip().lower() or 'y'
+                    if retry != 'y':
+                        break
+                    continue
             
             try:
                 with h5py.File(measured_file, 'r') as f:
@@ -700,51 +715,139 @@ class PiPlotter:
         print(f"Creating plot with {len(measured_data)} measured + {len(simulated_data)} simulated curves")
         print(f"{'='*70}")
         
-        # Ask about normalization
-        normalize = input("\nApply baseline normalization (shift minimum to zero)? (y/n) [n]: ").strip().lower() or 'n'
+        # Variables for adjustments
+        amplitude_scale = {}  # scale factor for each measured curve
+        time_shift_samples = 0
+        normalize_max = False
+        ylabel_suffix = ""
+        fitting_choice = '4'
         
-        # Calculate global minimum if normalizing
-        global_min = None
-        if normalize == 'y':
-            all_mins = []
-            for data in measured_data:
-                all_mins.append(np.min(np.abs(data['decay'])))
-            for data in simulated_data:
-                all_mins.append(np.min(np.abs(data['decay'])))
-            global_min = min(all_mins)
-            print(f"  Global minimum value: {global_min:.3e} T/s")
-            print(f"  All curves will be shifted by -{global_min:.3e}")
+        # === Data Fitting Options (only if measured data exists) ===
+        if len(measured_data) > 0:
+            print("\nData Fitting Options:")
+            print("  [1] Match mean amplitude after 200 μs")
+            print("  [2] Time shift measured data (±n samples)")
+            print("  [3] Normalize both to max=1")
+            print("  [4] No adjustment (raw data)")
+            
+            fitting_choice = input("\nSelect fitting option [1-4]: ").strip() or '4'
+        else:
+            print("\nNote: No fitting options available (no measured data loaded)")
+            print("  Plotting simulated data only...")
+        
+        if fitting_choice == '1':
+            # Match mean amplitude after 200 μs
+            print("\n--- Amplitude Matching (mean after 200 μs) ---")
+            
+            for i, meas in enumerate(measured_data):
+                meas_time_us = meas['time'] * 1e6
+                meas_decay_abs = np.abs(meas['decay'])
+                
+                # Find indices after 200 μs
+                meas_idx_after_200 = meas_time_us > 200
+                
+                if not np.any(meas_idx_after_200):
+                    print(f"Warning: Measured curve {i} has no data after 200 μs, skipping adjustment")
+                    amplitude_scale[i] = 1.0
+                    continue
+                
+                meas_mean = np.mean(meas_decay_abs[meas_idx_after_200])
+                
+                # Calculate mean for all simulated curves after 200 μs
+                sim_means = []
+                for sim in simulated_data:
+                    sim_time_us = sim['time'] * 1e6
+                    sim_decay_abs = np.abs(sim['decay'])
+                    sim_idx_after_200 = sim_time_us > 200
+                    if np.any(sim_idx_after_200):
+                        sim_means.append(np.mean(sim_decay_abs[sim_idx_after_200]))
+                
+                if sim_means:
+                    avg_sim_mean = np.mean(sim_means)
+                    scale = avg_sim_mean / meas_mean
+                    amplitude_scale[i] = scale
+                    print(f"  Measured [{i}]: mean={meas_mean:.3e}, scale factor={scale:.4f}")
+                else:
+                    amplitude_scale[i] = 1.0
+            
+            ylabel_suffix = " (amplitude matched)"
+        
+        elif fitting_choice == '2':
+            # Time shift
+            time_shift_samples = int(input("\nEnter time shift in samples (+forward, -backward): ").strip() or "0")
+            if time_shift_samples != 0:
+                print(f"  Shifting measured data by {time_shift_samples} samples")
+                ylabel_suffix = f" (shifted {time_shift_samples} samples)"
+        
+        elif fitting_choice == '3':
+            # Normalize to max=1
+            normalize_max = True
+            print("  Normalizing all curves to max=1")
+            ylabel_suffix = " (normalized)"
+        
+        else:
+            print("  Using raw data (no adjustments)")
         
         fig, ax = plt.subplots(figsize=(16, 9))
         
         # Plot measured data with solid lines
         measured_colors = plt.cm.Reds(np.linspace(0.4, 0.9, max(len(measured_data), 1)))
         for i, data in enumerate(measured_data):
-            time_us = data['time'] * 1e6
-            decay_abs = np.abs(data['decay'])
+            time = data['time'].copy()
+            decay_abs = np.abs(data['decay'].copy())
             
-            # Apply normalization if requested
-            if normalize == 'y':
-                decay_abs = decay_abs - global_min
-                # Avoid log(0) by replacing zeros with small positive value
-                decay_abs = np.where(decay_abs <= 0, 1e-20, decay_abs)
+            # Apply time shift - shift decay data relative to time axis
+            if time_shift_samples != 0:
+                if time_shift_samples > 0:
+                    # Positive shift: measured curve appears LATER in time
+                    # Use decay data from earlier indices with later time values
+                    # Keep time unchanged, but use earlier decay samples
+                    decay_abs = decay_abs[:-time_shift_samples]  # Remove last n samples from decay
+                    time = time[time_shift_samples:]  # Use later time values
+                else:
+                    # Negative shift: measured curve appears EARLIER in time
+                    # Use decay data from later indices with earlier time values
+                    # Keep time unchanged, but use later decay samples
+                    shift = abs(time_shift_samples)
+                    decay_abs = decay_abs[shift:]  # Remove first n samples from decay
+                    time = time[:-shift]  # Use earlier time values
             
+            # Apply amplitude scaling (option 1)
+            if fitting_choice == '1' and i in amplitude_scale:
+                decay_abs = decay_abs * amplitude_scale[i]
+            
+            # Apply max normalization (option 3)
+            if normalize_max:
+                max_val = np.max(decay_abs)
+                if max_val > 0:
+                    decay_abs = decay_abs / max_val
+            
+            time_us = time * 1e6
             ax.loglog(time_us, decay_abs, 
                      color=measured_colors[i], linewidth=2.5, 
                      marker='o', markersize=5, markevery=max(len(time_us)//20, 1),
                      label=f"[M] {data['label']}", alpha=0.8, linestyle='-')
         
-        # Plot simulated data with dashed lines
+        # Plot simulated data with dashed lines (no time shift applied)
         sim_colors = plt.cm.Blues(np.linspace(0.4, 0.9, max(len(simulated_data), 1)))
         for i, data in enumerate(simulated_data):
-            time_us = data['time'] * 1e6
-            decay_abs = np.abs(data['decay'])
+            time_sim = data['time'].copy()
+            decay_abs = np.abs(data['decay'].copy())
             
-            # Apply normalization if requested
-            if normalize == 'y':
-                decay_abs = decay_abs - global_min
-                # Avoid log(0) by replacing zeros with small positive value
-                decay_abs = np.where(decay_abs <= 0, 1e-20, decay_abs)
+            # If time shift was applied to measured data, trim simulated to match length
+            if time_shift_samples != 0 and len(measured_data) > 0:
+                # Get the length of the shifted measured data
+                measured_len = len(measured_data[0]['time']) - abs(time_shift_samples)
+                # Trim simulated data to same length for comparison
+                if len(decay_abs) > measured_len:
+                    time_sim = time_sim[:measured_len]
+                    decay_abs = decay_abs[:measured_len]
+            
+            time_us = time_sim * 1e6
+            
+            # Apply max normalization (option 3)
+            if normalize_max:
+                decay_abs = decay_abs / np.max(decay_abs)
             
             ax.loglog(time_us, decay_abs, 
                      color=sim_colors[i], linewidth=2.5,
@@ -753,11 +856,11 @@ class PiPlotter:
         
         ax.set_xlabel('Time [μs]', fontsize=18)
         
-        # Update y-label based on normalization
-        if normalize == 'y':
-            ax.set_ylabel(r'$\left|\frac{\partial B_z}{\partial t}\right|$ - min [T/s]', fontsize=18)
+        # Update y-label based on fitting option
+        if normalize_max:
+            ax.set_ylabel('Normalized Amplitude', fontsize=18)
         else:
-            ax.set_ylabel(r'$\left|\frac{\partial B_z}{\partial t}\right|$ [T/s]', fontsize=18)
+            ax.set_ylabel(r'$\left|\frac{\partial B_z}{\partial t}\right|$ [T/s]' + ylabel_suffix, fontsize=18)
         ax.tick_params(labelsize=18)
         ax.grid(True, alpha=0.3, which='both')
         
