@@ -132,6 +132,8 @@ class PiPlotter:
             print("  [2] Quick Log-Log Plot (first N simulations)")
             print("  [3] Detailed Side View (model grid + configuration)")
             print("  [4] Detailed Top View (model grid + configuration)")
+            print("  [5] Compare Measured vs Simulated Data (Single)")
+            print("  [6] Plot Multiple Measured & Simulated Curves")
             print("  [q] Quit plotting")
             
             choice = input("\nSelect a plot to display (or 'q' to quit): ").strip().lower()
@@ -152,6 +154,12 @@ class PiPlotter:
             elif choice == '4':
                 print("\nShowing: Detailed Top View")
                 self.plot_top_view_detailed()
+            elif choice == '5':
+                print("\nShowing: Measured vs Simulated Comparison")
+                self.plot_measured_vs_simulated()
+            elif choice == '6':
+                print("\nShowing: Multiple Measured & Simulated Curves")
+                self.plot_multiple_measured_and_simulated()
             else:
                 print(f"Invalid choice: '{choice}'. Please select from the menu.")
         
@@ -419,3 +427,371 @@ class PiPlotter:
         
         plt.tight_layout()
         plt.show()
+    
+    def plot_measured_vs_simulated(self):
+        """
+        Compare measured data from a HDF5 file against a specific simulation
+        from the currently loaded simulated dataset.
+        """
+        print("\n" + "="*70)
+        print("Compare Measured vs Simulated Data")
+        print("="*70)
+        
+        # Get measured data file path
+        measured_file = input("\nEnter path to measured HDF5 file (e.g., Measure/dataset.h5): ").strip()
+        
+        # Check if file exists
+        import os
+        if not os.path.exists(measured_file):
+            print(f"Error: File not found: {measured_file}")
+            return
+        
+        # Load measured data
+        print(f"\nLoading measured data from: {measured_file}")
+        try:
+            with h5py.File(measured_file, 'r') as f:
+                # Get metadata
+                num_measured = f['metadata'].attrs['num_simulations']
+                print(f"Measured dataset contains {num_measured} measurement(s)")
+                
+                # List available measurements
+                if num_measured > 1:
+                    print("\nAvailable measurements:")
+                    for i in range(num_measured):
+                        sim = f[f'simulations/simulation_{i}']
+                        label = sim.attrs.get('label', f'measurement_{i}')
+                        loop_z = sim.attrs.get('loop_z', 'N/A')
+                        print(f"  [{i}] {label} (Loop Z: {loop_z})")
+                    
+                    meas_idx = int(input(f"\nSelect measurement index [0-{num_measured-1}]: ").strip() or "0")
+                else:
+                    meas_idx = 0
+                
+                # Load selected measurement
+                sim = f[f'simulations/simulation_{meas_idx}']
+                measured_time = sim['time'][:]
+                measured_decay = sim['decay'][:]
+                measured_label = sim.attrs.get('label', 'Measured')
+                measured_loop_z = sim.attrs.get('loop_z', 0.0)
+                measured_target_present = sim.attrs.get('target_present', False)
+        except Exception as e:
+            print(f"Error reading measured file: {e}")
+            return
+        
+        print(f"\nMeasured data loaded:")
+        print(f"  Label: {measured_label}")
+        print(f"  Samples: {len(measured_time)}")
+        print(f"  Loop Z: {measured_loop_z}")
+        print(f"  Target Present: {measured_target_present}")
+        
+        # Select simulation from loaded dataset
+        print(f"\n{'='*70}")
+        print("Select simulation from loaded dataset to compare:")
+        print(f"{'='*70}")
+        
+        for idx, meta in enumerate(self.simulations_metadata):
+            if meta['target_present']:
+                print(f"  [{idx+1}] {meta['label']} (Loop @ {meta['loop_z']:.3f}m, Target @ {meta['target_z']:.3f}m)")
+            else:
+                print(f"  [{idx+1}] {meta['label']} (Loop @ {meta['loop_z']:.3f}m, No Target)")
+        
+        try:
+            sim_choice = int(input(f"\nSelect simulation [1-{self.num_sims}]: ").strip()) - 1
+            if sim_choice < 0 or sim_choice >= self.num_sims:
+                print("Invalid selection.")
+                return
+        except ValueError:
+            print("Invalid input.")
+            return
+        
+        sim_meta = self.simulations_metadata[sim_choice]
+        
+        # Create comparison plot
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 8))
+        
+        # Left plot: Overlay comparison
+        measured_time_us = measured_time * 1e6
+        measured_decay_abs = np.abs(measured_decay)
+        sim_time_us = sim_meta['time'] * 1e6
+        sim_decay_abs = np.abs(sim_meta['decay'])
+        
+        ax1.loglog(measured_time_us, measured_decay_abs, 
+                  color='red', linewidth=2.5, marker='o', markersize=4,
+                  label=f'Measured: {measured_label}', alpha=0.8)
+        ax1.loglog(sim_time_us, sim_decay_abs, 
+                  color='blue', linewidth=2.5, marker='s', markersize=4,
+                  label=f'Simulated: {sim_meta["label"]}', alpha=0.8)
+        
+        ax1.set_xlabel('Time [μs]', fontsize=18)
+        ax1.set_ylabel(r'$\left|\frac{\partial B_z}{\partial t}\right|$ [T/s]', fontsize=18)
+        ax1.tick_params(labelsize=18)
+        ax1.legend(fontsize=16, loc='best')
+        ax1.grid(True, alpha=0.3, which='both')
+        
+        # Right plot: Normalized comparison (if time arrays are compatible)
+        if len(measured_time) == len(sim_meta['time']) and np.allclose(measured_time, sim_meta['time'], rtol=1e-3):
+            # Same time base - show difference
+            difference = measured_decay_abs - sim_decay_abs
+            relative_diff = (difference / sim_decay_abs) * 100  # Percentage difference
+            
+            ax2.semilogx(measured_time_us, relative_diff, 
+                        color='green', linewidth=2.5, marker='o', markersize=4)
+            ax2.axhline(0, color='black', linestyle='--', linewidth=1, alpha=0.5)
+            ax2.set_xlabel('Time [μs]', fontsize=18)
+            ax2.set_ylabel('Relative Difference [%]', fontsize=18)
+            ax2.tick_params(labelsize=18)
+            ax2.grid(True, alpha=0.3, which='both')
+        else:
+            # Different time bases - show normalized overlay
+            measured_norm = measured_decay_abs / np.max(measured_decay_abs)
+            sim_norm = sim_decay_abs / np.max(sim_decay_abs)
+            
+            ax2.semilogx(measured_time_us, measured_norm, 
+                        color='red', linewidth=2.5, marker='o', markersize=4,
+                        label='Measured (normalized)', alpha=0.8)
+            ax2.semilogx(sim_time_us, sim_norm, 
+                        color='blue', linewidth=2.5, marker='s', markersize=4,
+                        label='Simulated (normalized)', alpha=0.8)
+            ax2.set_xlabel('Time [μs]', fontsize=18)
+            ax2.set_ylabel('Normalized Amplitude', fontsize=18)
+            ax2.tick_params(labelsize=18)
+            ax2.legend(fontsize=16, loc='best')
+            ax2.grid(True, alpha=0.3, which='both')
+        
+        plt.tight_layout()
+        plt.show()
+        
+        # Print comparison statistics
+        print(f"\n{'='*70}")
+        print("Comparison Statistics:")
+        print(f"{'='*70}")
+        print(f"Measured:")
+        print(f"  Time range: {measured_time[0]*1e6:.3f} - {measured_time[-1]*1e6:.3f} μs")
+        print(f"  Amplitude range: {np.min(measured_decay_abs):.3e} - {np.max(measured_decay_abs):.3e} T/s")
+        print(f"\nSimulated:")
+        print(f"  Time range: {sim_meta['time'][0]*1e6:.3f} - {sim_meta['time'][-1]*1e6:.3f} μs")
+        print(f"  Amplitude range: {np.min(sim_decay_abs):.3e} - {np.max(sim_decay_abs):.3e} T/s")
+    
+    def plot_multiple_measured_and_simulated(self):
+        """
+        Plot multiple measured decay curves alongside multiple simulated curves.
+        """
+        print("\n" + "="*70)
+        print("Plot Multiple Measured & Simulated Curves")
+        print("="*70)
+        
+        # Initialize lists to store data
+        measured_data = []
+        simulated_data = []
+        
+        # === Load Measured Data ===
+        print("\n" + "-"*70)
+        print("MEASURED DATA")
+        print("-"*70)
+        
+        while True:
+            add_measured = input("\nAdd measured data file? (y/n) [y]: ").strip().lower() or 'y'
+            if add_measured != 'y':
+                break
+            
+            measured_file = input("Enter path to measured HDF5 file: ").strip()
+            
+            import os
+            if not os.path.exists(measured_file):
+                print(f"Error: File not found: {measured_file}")
+                continue
+            
+            try:
+                with h5py.File(measured_file, 'r') as f:
+                    num_measured = f['metadata'].attrs['num_simulations']
+                    print(f"File contains {num_measured} measurement(s)")
+                    
+                    if num_measured > 1:
+                        print("\nAvailable measurements:")
+                        for i in range(num_measured):
+                            sim = f[f'simulations/simulation_{i}']
+                            label = sim.attrs.get('label', f'measurement_{i}')
+                            print(f"  [{i}] {label}")
+                        
+                        indices_str = input("Enter measurement indices (comma-separated, or 'all'): ").strip()
+                        if indices_str.lower() == 'all':
+                            indices = list(range(num_measured))
+                        else:
+                            indices = [int(x.strip()) for x in indices_str.split(',')]
+                    else:
+                        indices = [0]
+                    
+                    # Load selected measurements
+                    for idx in indices:
+                        sim = f[f'simulations/simulation_{idx}']
+                        time = sim['time'][:]
+                        decay = sim['decay'][:]
+                        label = sim.attrs.get('label', f'Measured_{len(measured_data)+1}')
+                        
+                        measured_data.append({
+                            'time': time,
+                            'decay': decay,
+                            'label': label,
+                            'file': os.path.basename(measured_file)
+                        })
+                        print(f"  ✓ Added: {label}")
+            
+            except Exception as e:
+                print(f"Error reading file: {e}")
+                continue
+        
+        if not measured_data:
+            print("\nNo measured data loaded.")
+        
+        # === Select Simulated Data ===
+        print("\n" + "-"*70)
+        print("SIMULATED DATA")
+        print("-"*70)
+        
+        if self.num_sims > 0:
+            print(f"\nCurrently loaded dataset has {self.num_sims} simulations")
+            add_sim = input("Add simulations from loaded dataset? (y/n) [y]: ").strip().lower() or 'y'
+            
+            if add_sim == 'y':
+                print("\nAvailable simulations:")
+                for idx, meta in enumerate(self.simulations_metadata):
+                    if meta['target_present']:
+                        print(f"  [{idx+1}] {meta['label']} (Loop @ {meta['loop_z']:.3f}m, Target @ {meta['target_z']:.3f}m)")
+                    else:
+                        print(f"  [{idx+1}] {meta['label']} (Loop @ {meta['loop_z']:.3f}m, No Target)")
+                
+                print("\nSelect simulations:")
+                print("  - Enter indices (comma-separated, e.g., '1,3,5')")
+                print("  - Enter 'all' for all simulations")
+                print("  - Enter 'skip' to skip")
+                
+                sim_input = input("Your selection: ").strip().lower()
+                
+                if sim_input != 'skip':
+                    if sim_input == 'all':
+                        selected_indices = list(range(self.num_sims))
+                    else:
+                        try:
+                            parts = [p.strip() for p in sim_input.split(',')]
+                            selected_indices = [int(p) - 1 for p in parts if p]
+                        except ValueError:
+                            print("Invalid input, skipping simulations.")
+                            selected_indices = []
+                    
+                    for idx in selected_indices:
+                        if 0 <= idx < self.num_sims:
+                            meta = self.simulations_metadata[idx]
+                            simulated_data.append({
+                                'time': meta['time'],
+                                'decay': meta['decay'],
+                                'label': meta['label'],
+                                'target_present': meta['target_present']
+                            })
+                            print(f"  ✓ Added: {meta['label']}")
+        else:
+            print("\nNo simulated dataset loaded.")
+        
+        # === Create Plot ===
+        if not measured_data and not simulated_data:
+            print("\nNo data selected for plotting.")
+            return
+        
+        print(f"\n{'='*70}")
+        print(f"Creating plot with {len(measured_data)} measured + {len(simulated_data)} simulated curves")
+        print(f"{'='*70}")
+        
+        # Ask about normalization
+        normalize = input("\nApply baseline normalization (shift minimum to zero)? (y/n) [n]: ").strip().lower() or 'n'
+        
+        # Calculate global minimum if normalizing
+        global_min = None
+        if normalize == 'y':
+            all_mins = []
+            for data in measured_data:
+                all_mins.append(np.min(np.abs(data['decay'])))
+            for data in simulated_data:
+                all_mins.append(np.min(np.abs(data['decay'])))
+            global_min = min(all_mins)
+            print(f"  Global minimum value: {global_min:.3e} T/s")
+            print(f"  All curves will be shifted by -{global_min:.3e}")
+        
+        fig, ax = plt.subplots(figsize=(16, 9))
+        
+        # Plot measured data with solid lines
+        measured_colors = plt.cm.Reds(np.linspace(0.4, 0.9, max(len(measured_data), 1)))
+        for i, data in enumerate(measured_data):
+            time_us = data['time'] * 1e6
+            decay_abs = np.abs(data['decay'])
+            
+            # Apply normalization if requested
+            if normalize == 'y':
+                decay_abs = decay_abs - global_min
+                # Avoid log(0) by replacing zeros with small positive value
+                decay_abs = np.where(decay_abs <= 0, 1e-20, decay_abs)
+            
+            ax.loglog(time_us, decay_abs, 
+                     color=measured_colors[i], linewidth=2.5, 
+                     marker='o', markersize=5, markevery=max(len(time_us)//20, 1),
+                     label=f"[M] {data['label']}", alpha=0.8, linestyle='-')
+        
+        # Plot simulated data with dashed lines
+        sim_colors = plt.cm.Blues(np.linspace(0.4, 0.9, max(len(simulated_data), 1)))
+        for i, data in enumerate(simulated_data):
+            time_us = data['time'] * 1e6
+            decay_abs = np.abs(data['decay'])
+            
+            # Apply normalization if requested
+            if normalize == 'y':
+                decay_abs = decay_abs - global_min
+                # Avoid log(0) by replacing zeros with small positive value
+                decay_abs = np.where(decay_abs <= 0, 1e-20, decay_abs)
+            
+            ax.loglog(time_us, decay_abs, 
+                     color=sim_colors[i], linewidth=2.5,
+                     marker='s', markersize=5, markevery=max(len(time_us)//20, 1),
+                     label=f"[S] {data['label']}", alpha=0.8, linestyle='--')
+        
+        ax.set_xlabel('Time [μs]', fontsize=18)
+        
+        # Update y-label based on normalization
+        if normalize == 'y':
+            ax.set_ylabel(r'$\left|\frac{\partial B_z}{\partial t}\right|$ - min [T/s]', fontsize=18)
+        else:
+            ax.set_ylabel(r'$\left|\frac{\partial B_z}{\partial t}\right|$ [T/s]', fontsize=18)
+        ax.tick_params(labelsize=18)
+        ax.grid(True, alpha=0.3, which='both')
+        
+        # Smart legend positioning
+        total_items = len(measured_data) + len(simulated_data)
+        if total_items > 15:
+            ncol = 3
+            loc = 'upper center'
+            bbox = (0.5, -0.08)
+            plt.subplots_adjust(bottom=0.2)
+        elif total_items > 8:
+            ncol = 2
+            loc = 'upper right'
+            bbox = None
+        else:
+            ncol = 1
+            loc = 'best'
+            bbox = None
+        
+        if bbox:
+            ax.legend(fontsize=16, ncol=ncol, loc=loc, bbox_to_anchor=bbox, framealpha=0.9)
+        else:
+            ax.legend(fontsize=16, ncol=ncol, loc=loc, framealpha=0.9)
+        
+        plt.tight_layout()
+        plt.show()
+        
+        # Print summary
+        print(f"\n{'='*70}")
+        print("Plot Summary:")
+        print(f"{'='*70}")
+        print(f"Measured curves: {len(measured_data)}")
+        for data in measured_data:
+            print(f"  • {data['label']} ({len(data['time'])} points)")
+        print(f"\nSimulated curves: {len(simulated_data)}")
+        for data in simulated_data:
+            print(f"  • {data['label']} ({len(data['time'])} points)")
