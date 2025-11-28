@@ -68,7 +68,7 @@ class PiConditioner:
         decay_curves = np.clip(decay_curves, 0, 3.3)
         decay_curves = self.quantize(decay_curves, depth=12, dtype=np.uint16)        
         '''
-        decay_curves *= (np.pi * self.cfg.tx_radius**2 * self.cfg.tx_n_turns)
-        decay_curves = np.clip(decay_curves, 0, 30)
-        decay_curves = (self.quantize(decay_curves, depth=14, dtype=np.uint16)/((2**14)-1))*30
+        
+        #decay_curves = np.clip(decay_curves, 0, 30)
+        #decay_curves = (self.quantize(decay_curves, depth=14, dtype=np.uint16)/(2**14))*30
         return time, decay_curves, labels, label_strings, metadata

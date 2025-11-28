@@ -7,6 +7,7 @@ import simpeg.electromagnetics.time_domain as tdem
 import numpy as np
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+import h5py
 
 from datetime import datetime
 import os
@@ -48,55 +49,76 @@ class PiSimulator:
         survey = tdem.Survey(transmitters_list)
         return survey
 
-    def create_conductivity_model(self, mesh, target_z_val, target_in_model):        
+    def create_conductivity_model(self, mesh, target_z_val, target_type, target_conductivity=None):        
         ind_active = mesh.cell_centers[:, 2] < self.cfg.separation_z
 
         r = mesh.cell_centers[ind_active, 0]
         z = mesh.cell_centers[ind_active, 2]
 
         model_map = maps.InjectActiveCells(mesh, ind_active, self.cfg.air_conductivity)
-        
         model = self.cfg.air_conductivity * np.ones(ind_active.sum())
 
         ind_soil = (z < 0)
         model[ind_soil] = self.cfg.soil_conductivity
 
-        if target_in_model: 
-            inner_radius = self.cfg.target_radius - self.cfg.target_thickness
-            if inner_radius < 0:
-                inner_radius = 0
-            
-            unique_r = np.unique(r)
-            if len(unique_r) > 1:
-                min_cell_width = np.min(np.diff(unique_r[unique_r > 0]))
-            else:
-                min_cell_width = 0.01  # Default cell width
+        if target_type != 0:
+            conductivity = target_conductivity if target_conductivity is not None else self.cfg.aluminum_conductivity
             
             top_z = target_z_val + self.cfg.target_height/2
             bottom_z = target_z_val - self.cfg.target_height/2
-
-            if self.cfg.target_thickness < min_cell_width:
-                ind_walls = (
-                    (r >= self.cfg.target_radius - min_cell_width) &
-                    (r <= self.cfg.target_radius) &
-                    (z < top_z) &
-                    (z > bottom_z)
-                )
-            else:
-                ind_walls = (
-                    (r >= inner_radius) &
-                    (r <= self.cfg.target_radius) &
-                    (z < top_z) &
-                    (z > bottom_z)
-                )
             
-            ind_top = (r <= self.cfg.target_radius) & (np.abs(z - top_z) <= 0.01)
-            ind_bottom = (r <= self.cfg.target_radius) & (np.abs(z - bottom_z) <= 0.01)
-            ind_can = ind_walls | ind_top | ind_bottom
-            model[ind_can] = self.cfg.aluminum_conductivity
+            if target_type == 1:
+                unique_r = np.unique(r)
+                min_cell_width = np.min(np.diff(unique_r[unique_r > 0])) if len(unique_r) > 1 else 0.01
+
+                inner_radius = max(0, self.cfg.target_radius - self.cfg.target_thickness)
+                
+                r_min_wall = self.cfg.target_radius - min_cell_width if self.cfg.target_thickness < min_cell_width else inner_radius
+
+                ind_walls = (
+                    (r >= r_min_wall) & (r <= self.cfg.target_radius) &
+                    (z < top_z) & (z > bottom_z)
+                )
+                
+                ind_top = (r <= self.cfg.target_radius) & (np.abs(z - top_z) <= min_cell_width)
+                ind_bottom = (r <= self.cfg.target_radius) & (np.abs(z - bottom_z) <= min_cell_width)
+                
+                ind_target = ind_walls | ind_top | ind_bottom
+
+            elif target_type == 2:
+                z_norm = (z - target_z_val) / self.cfg.target_height
+                crumple_factor = 1.0 + 0.2 * np.sin(10 * z_norm)
+                
+                effective_radius = self.cfg.target_radius * crumple_factor
+                
+                r_norm = r / self.cfg.target_radius
+                radial_pattern = np.sin(8 * r_norm * np.pi) * 0.3 + 0.7
+                
+                ind_target = (
+                    (r <= effective_radius) & 
+                    (z >= bottom_z) & 
+                    (z <= top_z) &
+                    (radial_pattern > 0.5)
+                )
+
+            elif target_type == 3:
+                box_half_width = self.cfg.target_radius
+                equivalent_radius = box_half_width * 1.12837
+                
+                ind_target = (
+                    (r <= equivalent_radius) & 
+                    (z <= top_z) & 
+                    (z >= bottom_z)
+                )
+
+            else:
+                raise ValueError(f"Unknown target_type: {target_type}")
+            
+            model[ind_target] = conductivity
+            
         return model, model_map
 
-    def run(self, loop_z_range, target_z_range, mesh=None):
+    def run(self, loop_z_range, target_type, target_z_range, mesh=None):
         target_over_soil = target_z_range is not None and target_z_range[0] >= 0
         target_under_soil = target_z_range is not None and target_z_range[0] < 0
 
@@ -127,7 +149,11 @@ class PiSimulator:
         else:
             create_plotting_metadata = False
 
-        model, model_map = self.create_conductivity_model(mesh, target_z_val, target_under_soil or target_over_soil)
+        if (target_over_soil or target_under_soil) and target_z_range is not None:
+            model, model_map = self.create_conductivity_model(mesh, target_z_val, target_type, self.cfg.aluminum_conductivity)
+        else:
+            print("If a target is present, target_z_range must be provided.")
+            return None, None, None, None, None, None
 
         simulation = tdem.simulation.Simulation3DMagneticFluxDensity(
             mesh,
@@ -139,6 +165,8 @@ class PiSimulator:
 
         dpred = simulation.dpred(m=model)
         dpred = np.reshape(dpred, (1, len(time_channels)))
+        emf= -dpred[0, :]* (np.pi * self.cfg.tx_radius**2 * self.cfg.tx_n_turns)
+
         
         if target_over_soil or target_under_soil:
             label = f"Coil at {loop_z_val:.2f}, object at {target_z_val:.2f}"
@@ -152,6 +180,11 @@ class PiSimulator:
             'label': label
         }
 
+        model_params = {
+            'target_type': target_type,
+            'target_conductivity': self.cfg.aluminum_conductivity if target_under_soil or target_over_soil else 0.0
+        }
+        
         plotting_metadata = None
         if create_plotting_metadata:
             active_area_z = self.cfg.separation_z
@@ -169,12 +202,11 @@ class PiSimulator:
                 'ind_active': ind_active,
                 'cfg': self.cfg
             }
-        
-        return time_channels, -dpred[0, :], label, simulation_metadata, plotting_metadata
+        return time_channels, emf, label, simulation_metadata, plotting_metadata, model_params
 
 
 def run_simulations(simulator, logger, loop_z_range, target_z_range, 
-                    num_target_present, num_target_absent, probability_of_target_in_soil, output_file=None):    
+                    num_target_present, num_target_absent, num_different_targets, probability_of_target_in_soil, output_file=None):    
     mesh = None
     total_sims = num_target_present + num_target_absent
     sim_index = 0
@@ -191,15 +223,22 @@ def run_simulations(simulator, logger, loop_z_range, target_z_range,
     print(f"\n=== Running Simulations (Writing to {output_file}) ===")
     
     print()
+    
+    error_count = 0
+    target_type = 0
     for i in range(num_target_present):
-        time, decay, label, metadata, plot_meta = simulator.run(
-            loop_z_range, target_z_range, mesh=mesh
+        target_type = np.random.randint(1, num_different_targets + 1)
+        time, decay, label, metadata, plot_meta, model_params = simulator.run(
+            loop_z_range, target_type, target_z_range, mesh=mesh
         )
         
         if mesh is None and plot_meta is not None:
             mesh = plot_meta['mesh']
+        if time is None and decay is None:
+            error_count += 1
+            continue
         
-        logger.store_to_hdf5(output_file, sim_index, time, decay, label, metadata)
+        logger.store_to_hdf5(output_file, sim_index, time, decay, label, metadata, model_params)
         sim_index += 1
         print(f"\n\rTarget-Present: {i+1}/{num_target_present}", end='', flush=True)
     
@@ -207,24 +246,30 @@ def run_simulations(simulator, logger, loop_z_range, target_z_range,
     for i in range(num_target_absent):
         if np.random.rand() < probability_of_target_in_soil:
             target_z_range = [-simulator.cfg.separation_z, - simulator.cfg.target_height / 2]
+            target_type = np.random.randint(1, num_different_targets + 1)
         else:
             target_z_range = None
+            target_type = 0
         
-        time, decay, label, metadata, plot_meta = simulator.run(
-            loop_z_range, target_z_range, mesh=mesh
+        time, decay, label, metadata, plot_meta, model_params = simulator.run(
+            loop_z_range, target_type, target_z_range, mesh=mesh
         )
+
+        if mesh is None and decay is None:
+            error_count += 1
+            continue
         
-        logger.store_to_hdf5(output_file, sim_index, time, decay, label, metadata)
+        logger.store_to_hdf5(output_file, sim_index, time, decay, label, metadata, model_params)
         sim_index += 1
 
         print(f"\n\rTarget-Absent: {i+1}/{num_target_absent}", end='', flush=True)
 
     print()
+    print(f"\nErrors encountered during simulation: {error_count}")
     
     logger.finalize_hdf5(output_file, len(time))
     
-    print(f"\n✓ Complete: {total_sims} simulations written to {output_file}")
-    
+    print(f"\n Complete: {total_sims} simulations written to {output_file}")
     return output_file
 
 def find_hdf5_files(root_dir='Datasets'):
@@ -315,6 +360,7 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
         print("  5. Train classifier")
         print("  6. Validate classifier")
         print("  7. Test classifier")
+        print("  8. Classification plots")
         print("  [b] Back to main menu")
         
         choice = input("\nSelect option: ").strip().lower()
@@ -495,12 +541,129 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                 import traceback
                 traceback.print_exc()
         
+        elif choice == '8':
+            # Classification plots submenu
+            try:
+                if classifier.model is None:
+                    print("\\nNo model loaded. Train a model first (option 5).")
+                    continue
+                
+                # Need test data for plots
+                test_path = get_split_dataset_path(hdf5_file, 'test')
+                if not test_path:
+                    print(f"\\nNo test split found. Please split the dataset first (option 3).")
+                    continue
+                
+                print(f"Loading test data: {os.path.basename(test_path)}")
+                _, decay_curves, labels, _, _ = logger.load_from_hdf5(test_path)
+                X_test = decay_curves.reshape(decay_curves.shape[0], decay_curves.shape[1], 1)
+                y_test = labels
+                
+                # Classification plots submenu
+                while True:
+                    print(f"\\n{'='*70}")
+                    print("Classification Plots")
+                    print(f"{'='*70}")
+                    print("\\nAvailable plots:")
+                    print("  [1] Confusion Matrix")
+                    print("  [2] Normalized Confusion Matrix")
+                    print("  [3] Model Architecture Diagram")
+                    print("  [4] Model Parameters (LaTeX)")
+                    print("  [5] ROC Curve")
+                    print("  [6] Prediction Distribution")
+                    print("  [7] All Plots")
+                    print("  [b] Back")
+                    
+                    plot_choice = input("\\nSelect plot: ").strip().lower()
+                    
+                    if plot_choice == '1':
+                        classifier.plot_confusion_matrix(X_test, y_test, normalize=False)
+                    elif plot_choice == '2':
+                        classifier.plot_confusion_matrix(X_test, y_test, normalize=True)
+                    elif plot_choice == '3':
+                        classifier.plot_model_architecture()
+                    elif plot_choice == '4':
+                        classifier.generate_model_summary_latex()
+                    elif plot_choice == '5':
+                        classifier.plot_roc_curve(X_test, y_test)
+                    elif plot_choice == '6':
+                        classifier.plot_prediction_distribution(X_test, y_test)
+                    elif plot_choice == '7':
+                        print("\\nGenerating all plots...")
+                        classifier.plot_confusion_matrix(X_test, y_test, normalize=False)
+                        classifier.plot_confusion_matrix(X_test, y_test, normalize=True)
+                        classifier.plot_roc_curve(X_test, y_test)
+                        classifier.plot_prediction_distribution(X_test, y_test)
+                        classifier.plot_model_architecture()
+                        classifier.generate_model_summary_latex()
+                    elif plot_choice == 'b':
+                        break
+                    else:
+                        print("Invalid selection.")
+                
+            except Exception as e:
+                print(f"Error: {e}")
+                import traceback
+                traceback.print_exc()
+        
         elif choice == 'b':
             # Back to main menu
             break
         
         else:
             print("Invalid option selected.")
+
+def generate_conductivity_models(simulator, cfg):
+    from discretize import CylindricalMesh
+    
+    models_dir = "Models"
+    os.makedirs(models_dir, exist_ok=True)
+    
+    hr = [(0.01, 15), (0.01, 15, 1.3), (0.05, 10, 1.5)]
+    hphi = 1
+    hz = [(0.01, 10, -1.3), (0.01, 30), (0.01, 10, 1.3)]
+    mesh = CylindricalMesh([hr, hphi, hz], x0="00C")
+    
+    models_file = os.path.join(models_dir, "conductivity_models.h5")
+    
+    print(f"\nGenerating conductivity models...")
+    
+    with h5py.File(models_file, 'w') as f:
+        f.attrs['creation_time'] = datetime.now().isoformat()
+        
+        ind_active = mesh.cell_centers[:, 2] < cfg.separation_z
+        r = mesh.cell_centers[ind_active, 0]
+        z = mesh.cell_centers[ind_active, 2]
+        
+        mesh_group = f.create_group('mesh_info')
+        mesh_group.create_dataset('cell_centers_r', data=r)
+        mesh_group.create_dataset('cell_centers_z', data=z)
+        mesh_group.create_dataset('ind_active', data=ind_active)
+        
+        models_group = f.create_group('models')
+        
+        target_types = [1, 2, 3]
+        
+        for target_type in target_types:
+            model, _ = simulator.create_conductivity_model(
+                mesh, 0.0, target_type, cfg.aluminum_conductivity
+            )
+            model_name = f"type_{target_type}_cond_{cfg.aluminum_conductivity:.0e}"
+            model_group = models_group.create_group(model_name)
+            model_group.create_dataset('model', data=model)
+            model_group.attrs['target_type'] = target_type
+            model_group.attrs['conductivity'] = cfg.aluminum_conductivity
+            model_group.attrs['target_z'] = 0.0
+                
+        base_model, _ = simulator.create_conductivity_model(mesh, 0.0, 0)
+        base_group = models_group.create_group('base_model')
+        base_group.create_dataset('model', data=base_model)
+        base_group.attrs['target_type'] = 0
+        base_group.attrs['conductivity'] = 0.0
+        base_group.attrs['target_z'] = 0.0
+        
+    print(f"Models saved to: {models_file}")
+
 
 if __name__ == "__main__":
     cfg = PiConfig('config.json')
@@ -520,6 +683,7 @@ if __name__ == "__main__":
         print("\nOptions:")
         print("  1. Generate new dataset")
         print("  2. Load existing dataset")
+        print("  3. Update conductivity models")
         print("  [q] Quit")
         
         choice = input("\nSelect option: ").strip().lower()
@@ -537,7 +701,7 @@ if __name__ == "__main__":
             
             compute_mag_field = False
             if dataset_type == 'b':
-                print("\n⚠️  Warning: Computing magnetic field distribution will:")
+                print("\nWarning: Computing magnetic field distribution will:")
                 print("    - Significantly increase computation time (~5x slower)")
                 print("    - Require more storage (~10x larger files)")
                 confirm = input("\nProceed with enhanced dataset? (y/n): ").strip().lower()
@@ -560,7 +724,9 @@ if __name__ == "__main__":
                 target_z_range=cfg.target_z_range,
                 num_target_present=num_tp,
                 num_target_absent=num_ta,
-                probability_of_target_in_soil=0.5,
+                num_different_targets=3,
+                probability_of_target_in_soil=1,
+                
             )
             
             # Go to dataset operations menu
@@ -575,6 +741,17 @@ if __name__ == "__main__":
             else:
                 # Go to dataset operations menu
                 dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifier, conditioner)
+        
+        elif choice == '3':
+            # Update conductivity models
+            print("\n" + "="*70)
+            print("Update Conductivity Models")
+            print("="*70)
+            print("\nThis will generate all conductivity model combinations...")
+            confirm = input("Proceed? (y/n): ").strip().lower()
+            if confirm == 'y':
+                generate_conductivity_models(simulator, cfg)
+                print("\n✓ Conductivity models updated!")
         
         elif choice == 'q':
             # Quit

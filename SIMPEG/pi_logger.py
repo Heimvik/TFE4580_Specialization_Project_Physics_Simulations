@@ -19,7 +19,8 @@ class PiLogger:
             meta_group.attrs['num_target_absent'] = num_target_absent
     
     def store_to_hdf5(self, filename: str, sim_index: int, time: np.ndarray, 
-                      decay: np.ndarray, label: str, metadata: Dict[str, Any]):
+                      decay: np.ndarray, label: str, metadata: Dict[str, Any], 
+                      model_params: Dict[str, Any] = None):
         with h5py.File(filename, 'a') as f:
             sim = f['simulations'].create_group(f'simulation_{sim_index}')
             sim.create_dataset('time', data=time, compression='gzip', compression_opts=4)
@@ -32,6 +33,10 @@ class PiLogger:
                 sim.attrs['target_z'] = metadata['target_z']
             else:
                 sim.attrs['target_z'] = -999.0
+            
+            if model_params is not None:
+                sim.attrs['target_type'] = model_params.get('target_type', -1)
+                sim.attrs['target_conductivity'] = model_params.get('target_conductivity', 0.0)
 
     def finalize_hdf5(self, filename: str, time_samples: int):
         with h5py.File(filename, 'a') as f:
@@ -47,6 +52,8 @@ class PiLogger:
             labels = []
             loop_z_list = []
             target_z_list = []
+            target_types = []
+            target_conductivities = []
             
             sim0 = f['simulations/simulation_0']
             time = sim0['time'][:]
@@ -62,11 +69,16 @@ class PiLogger:
                 if target_z == -999.0:
                     target_z = None
                 
+                target_type = sim_group.attrs.get('target_type', -1)
+                target_conductivity = sim_group.attrs.get('target_conductivity', 0.0)
+                
                 decay_curves.append(decay)
                 label_strings.append(label_str)
                 labels.append(1 if target_present else 0)
                 loop_z_list.append(loop_z)
                 target_z_list.append(target_z)
+                target_types.append(target_type)
+                target_conductivities.append(target_conductivity)
             
             decay_curves = np.array(decay_curves)
             labels = np.array(labels)
@@ -78,7 +90,9 @@ class PiLogger:
                 'time_samples': f['metadata'].attrs['time_samples'],
                 'creation_time': f['metadata'].attrs['creation_time'],
                 'loop_z': np.array(loop_z_list),
-                'target_z': np.array(target_z_list, dtype=object)
+                'target_z': np.array(target_z_list, dtype=object),
+                'target_types': np.array(target_types),
+                'target_conductivities': np.array(target_conductivities)
             }
         
         print(f"Loaded {num_sims} simulations from HDF5")
@@ -97,15 +111,6 @@ class PiLogger:
             print(f"{'='*70}\n")
     
     def save_model(self, model, model_path: str, dataset_name: str, split_type: str):
-        """
-        Save a Keras model to HDF5 format with metadata.
-        
-        Args:
-            model: Keras model to save
-            model_path: Path where the model will be saved
-            dataset_name: Name of the dataset used for training
-            split_type: Type of split ('train', 'val', 'test', or 'full')
-        """
         print(f"\n{'='*70}")
         print(f"Saving Model")
         print(f"{'='*70}")
@@ -131,15 +136,6 @@ class PiLogger:
         print(f"{'='*70}\n")
     
     def load_model(self, model_path: str):
-        """
-        Load a Keras model from HDF5 format and print metadata.
-        
-        Args:
-            model_path: Path to the saved model
-            
-        Returns:
-            Loaded Keras model
-        """
         import os
         from tensorflow import keras
         
@@ -151,10 +147,8 @@ class PiLogger:
         print(f"{'='*70}")
         print(f"Model path: {model_path}")
         
-        # Load the model
         model = keras.models.load_model(model_path)
         
-        # Read metadata
         try:
             with h5py.File(model_path, 'r') as f:
                 if 'model_metadata' in f:
@@ -171,18 +165,8 @@ class PiLogger:
         return model
     
     def get_model_path_for_dataset(self, dataset_path: str) -> str:
-        """
-        Generate the model path based on the dataset path.
-        
-        Args:
-            dataset_path: Path to the dataset HDF5 file
-        
-        Returns:
-            Path where the model should be saved
-        """
         import os
         
-        # Remove extension and add _model.h5
         base_path = dataset_path.replace('.h5', '').replace('.hdf5', '')
         model_path = f"{base_path}_model.h5"
         
