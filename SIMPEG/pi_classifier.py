@@ -1,22 +1,21 @@
 from tensorflow import keras 
 from tensorflow.keras import layers
 import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.lines import Line2D
 import os
 import h5py
 from datetime import datetime
+
+from pi_plotter import ClassifierPlotter
 
 
 class PiClassifier():
     def __init__(self, conditioner=None):
         self.model = None
         self.conditioner = conditioner
-        # Store split data in memory
-        self.train_data = None  # (time, decay_curves, labels, label_strings, metadata)
+        self.input_shape = None
+        self.train_data = None
         self.val_data = None
         self.test_data = None
-        # Processed arrays for training
         self.X_train = None
         self.y_train = None
         self.X_val = None
@@ -24,6 +23,195 @@ class PiClassifier():
         self.X_test = None
         self.y_test = None
         self.norm_params = None
+        self.plotter = ClassifierPlotter()
+    
+    def load_model(self, model_path):
+        print("\n" + "="*70)
+        print("Loading Pre-trained Model")
+        print("="*70)
+        
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f"Model file not found: {model_path}")
+        
+        self.model = keras.models.load_model(model_path)
+        self.input_shape = self.model.input_shape[1:]  # Exclude batch dimension
+        
+        print(f"✓ Model loaded from: {model_path}")
+        print(f"  - Input shape: {self.input_shape}")
+        print(f"  - Output classes: {self.model.output_shape[-1]}")
+        print(f"  - Total parameters: {self.model.count_params():,}")
+        
+        return self.model
+    
+    def save_model(self, model_path):
+        if self.model is None:
+            raise ValueError("No model to save. Build or load a model first.")
+        
+        print("\n" + "="*70)
+        print("Saving Model")
+        print("="*70)
+        
+        self.model.save(model_path)
+        print(f"✓ Model saved to: {model_path}")
+        
+        return model_path
+    
+    def calculate_flops(self, input_length=None, verbose=True):
+        print("\n" + "="*70)
+        print("FLOP Calculation for Single Inference")
+        print("="*70)
+        
+        if self.model is None:
+            if input_length is None:
+                raise ValueError("No model loaded and no input_length provided. "
+                               "Either load a model or provide input_length.")
+            # Build a temporary model for FLOP calculation
+            print("No model loaded. Building model for FLOP calculation...")
+            self.build_model(input_length)
+        
+        flops_breakdown = {}
+        total_flops = 0
+        current_shape = list(self.model.input_shape[1:])  # [time_samples, channels]
+        
+        if verbose:
+            print(f"\nInput shape: {current_shape}")
+            print("-" * 70)
+            print(f"{'Layer':<25} {'Type':<20} {'Output Shape':<20} {'FLOPs':>12}")
+            print("-" * 70)
+        
+        for layer in self.model.layers:
+            layer_name = layer.name
+            layer_type = layer.__class__.__name__
+            layer_flops = 0
+            
+            if isinstance(layer, layers.Conv1D):
+                # Conv1D FLOPs: 2 * K * C_in * C_out * L_out
+                # Where: K = kernel_size, C_in = input_channels, C_out = filters
+                # L_out = output_length, factor of 2 for multiply-add
+                kernel_size = layer.kernel_size[0]
+                in_channels = current_shape[-1]
+                out_channels = layer.filters
+                
+                if layer.padding == 'same':
+                    out_length = current_shape[0]
+                else:  # 'valid'
+                    out_length = current_shape[0] - kernel_size + 1
+                
+                # Multiply-adds (each is 2 FLOPs: 1 mult + 1 add)
+                layer_flops = 2 * kernel_size * in_channels * out_channels * out_length
+                
+                # Add bias if present
+                if layer.use_bias:
+                    layer_flops += out_channels * out_length
+                
+                current_shape = [out_length, out_channels]
+                
+            elif isinstance(layer, layers.BatchNormalization):
+                # BatchNorm FLOPs: 4 * elements (subtract mean, divide std, scale, shift)
+                num_elements = np.prod(current_shape)
+                layer_flops = 4 * num_elements
+                
+            elif isinstance(layer, layers.MaxPooling1D) or isinstance(layer, layers.AveragePooling1D):
+                # Pooling FLOPs: comparisons for max, additions for average
+                pool_size = layer.pool_size[0] if hasattr(layer.pool_size, '__len__') else layer.pool_size
+                strides = layer.strides[0] if hasattr(layer.strides, '__len__') else layer.strides
+                
+                out_length = current_shape[0] // strides
+                num_channels = current_shape[-1]
+                
+                # Max pooling: (pool_size - 1) comparisons per output
+                # Average pooling: pool_size additions + 1 division per output
+                if isinstance(layer, layers.MaxPooling1D):
+                    layer_flops = (pool_size - 1) * out_length * num_channels
+                else:
+                    layer_flops = (pool_size + 1) * out_length * num_channels
+                
+                current_shape = [out_length, num_channels]
+                
+            elif isinstance(layer, layers.GlobalAveragePooling1D):
+                # GlobalAvgPool: sum all elements + divide
+                sequence_length = current_shape[0]
+                num_channels = current_shape[-1]
+                layer_flops = sequence_length * num_channels + num_channels  # additions + divisions
+                current_shape = [num_channels]
+            
+            elif isinstance(layer, layers.Flatten):
+                # Flatten: 0 FLOPs (just reshaping)
+                layer_flops = 0
+                current_shape = [np.prod(current_shape)]
+                
+            elif isinstance(layer, layers.Dense):
+                # Dense FLOPs: 2 * input_size * output_size (multiply-add)
+                in_features = current_shape[-1] if isinstance(current_shape, list) else current_shape
+                out_features = layer.units
+                layer_flops = 2 * in_features * out_features
+                
+                # Add bias
+                if layer.use_bias:
+                    layer_flops += out_features
+                
+                current_shape = [out_features]
+                
+            elif isinstance(layer, layers.Dropout):
+                # Dropout: 0 FLOPs during inference (no-op)
+                layer_flops = 0
+                
+            elif isinstance(layer, layers.InputLayer):
+                # Input: 0 FLOPs
+                layer_flops = 0
+            
+            # Add activation FLOPs (ReLU: 1 comparison per element)
+            if hasattr(layer, 'activation') and layer.activation is not None:
+                activation_name = layer.activation.__name__ if hasattr(layer.activation, '__name__') else str(layer.activation)
+                if activation_name == 'relu':
+                    num_elements = np.prod(current_shape) if isinstance(current_shape, list) else current_shape
+                    layer_flops += num_elements  # 1 comparison per element
+                elif activation_name == 'softmax':
+                    # Softmax: exp(x), sum, divide for each element
+                    num_elements = np.prod(current_shape) if isinstance(current_shape, list) else current_shape
+                    layer_flops += 3 * num_elements
+            
+            flops_breakdown[layer_name] = {
+                'type': layer_type,
+                'flops': layer_flops,
+                'output_shape': list(current_shape) if isinstance(current_shape, list) else [current_shape]
+            }
+            total_flops += layer_flops
+            
+            if verbose and layer_flops > 0:
+                print(f"{layer_name:<25} {layer_type:<20} {str(current_shape):<20} {layer_flops:>12,}")
+        
+        if verbose:
+            print("-" * 70)
+            print(f"{'TOTAL':<45} {'':<20} {total_flops:>12,}")
+            print("="*70)
+            
+            # Summary statistics
+            print(f"\n📊 Summary:")
+            print(f"  - Total FLOPs per inference: {total_flops:,}")
+            print(f"  - Total MFLOPs: {total_flops / 1e6:.3f}")
+            print(f"  - Total GFLOPs: {total_flops / 1e9:.6f}")
+            
+            # Breakdown by layer type
+            print(f"\n📈 FLOPs by Layer Type:")
+            type_flops = {}
+            for name, info in flops_breakdown.items():
+                ltype = info['type']
+                if ltype not in type_flops:
+                    type_flops[ltype] = 0
+                type_flops[ltype] += info['flops']
+            
+            for ltype, flops in sorted(type_flops.items(), key=lambda x: -x[1]):
+                if flops > 0:
+                    pct = flops / total_flops * 100
+                    print(f"    {ltype:<25} {flops:>12,} ({pct:>5.1f}%)")
+        
+        return {
+            'breakdown': flops_breakdown,
+            'total_flops': total_flops,
+            'mflops': total_flops / 1e6,
+            'gflops': total_flops / 1e9
+        }
     
     def split_dataset(self, logger, source_path, train_ratio=0.7, val_ratio=0.15, test_ratio=0.15, save_to_file=False): 
         print("\n" + "="*70)
@@ -178,20 +366,20 @@ class PiClassifier():
         
         x = layers.Conv1D(filters=16, kernel_size=7, padding='same', activation='relu', name='conv1')(inputs)
         x = layers.BatchNormalization(name='bn1')(x)
-        x = layers.MaxPooling1D(pool_size=2, name='pool1')(x)
+        x = layers.MaxPooling1D(pool_size=4, name='pool1')(x)
         x = layers.Dropout(0.2, name='drop1')(x)
 
         x = layers.Conv1D(filters=32, kernel_size=5, padding='same', activation='relu', name='conv2')(x)
         x = layers.BatchNormalization(name='bn2')(x)
-        x = layers.MaxPooling1D(pool_size=2, name='pool2')(x)
+        x = layers.MaxPooling1D(pool_size=4, name='pool2')(x)
         x = layers.Dropout(0.2, name='drop2')(x)
 
-        x = layers.Conv1D(filters=64, kernel_size=3, padding='same', activation='relu', name='conv3')(x)
+        x = layers.Conv1D(filters=16, kernel_size=3, padding='same', activation='relu', name='conv3')(x)
         x = layers.BatchNormalization(name='bn3')(x)
-        x = layers.MaxPooling1D(pool_size=2, name='pool3')(x)
+        x = layers.MaxPooling1D(pool_size=4, name='pool3')(x)
         x = layers.Dropout(0.3, name='drop3')(x)
 
-        x = layers.GlobalAveragePooling1D(name='global_pool')(x)
+        x = layers.Flatten(name='flatten')(x)
 
         x = layers.Dense(32, activation='relu', name='fc1')(x)
         x = layers.Dropout(0.4, name='drop4')(x)
@@ -231,7 +419,7 @@ class PiClassifier():
             verbose=1
         )
         
-        self.plot_training_history(history)
+        self.plotter.plot_training_history(history)
         print("\n✓ Training complete!")
         
         return history
@@ -259,577 +447,299 @@ class PiClassifier():
         return test_loss, test_accuracy
     
     def visualize_training_data(self, time, decay_curves, labels, label_strings, metadata):
-        print("\n" + "="*70)
-        print("Training Data Visualization")
-        print("="*70)
-        print(f"Dataset: {metadata['num_simulations']} simulations")
-        print(f"  - Time samples: {len(time)}")
-        
-        # Create figure with subplots
-        fig, axes = plt.subplots(2, 2, figsize=(16, 10))
-        fig.suptitle('Training Data Overview', fontsize=16, fontweight='bold')
-        
-        time_us = time * 1e6  # Convert to microseconds
-        
-        # Plot 1: All decay curves colored by label
-        ax = axes[0, 0]
-        for i, (decay, label, label_str) in enumerate(zip(decay_curves, labels, label_strings)):
-            color = 'green' if label == 1 else 'blue'
-            alpha = 0.3
-            ax.loglog(time_us, decay, color=color, alpha=alpha, linewidth=1)
-        
-        # Add legend
-        num_target_present = np.sum(labels == 1)
-        num_target_absent = np.sum(labels == 0)
-        legend_elements = [
-            Line2D([0], [0], color='green', lw=2, label=f'Target Present ({num_target_present})'),
-            Line2D([0], [0], color='blue', lw=2, label=f'Target Absent ({num_target_absent})')
-        ]
-        ax.legend(handles=legend_elements, loc='upper right')
-        ax.set_xlabel('Time [μs]', fontsize=11)
-        ax.set_ylabel('-dBz/dt [T/s]', fontsize=11)
-        ax.set_title('All Decay Curves', fontsize=12)
-        ax.grid(True, alpha=0.3, which='both')
-        
-        # Plot 2: Sample target-present curves
-        ax = axes[0, 1]
-        target_present_indices = np.where(labels == 1)[0][:5]  # First 5
-        for idx in target_present_indices:
-            ax.loglog(time_us, decay_curves[idx], linewidth=2, label=label_strings[idx])
-        ax.set_xlabel('Time [μs]', fontsize=11)
-        ax.set_ylabel('-dBz/dt [T/s]', fontsize=11)
-        ax.set_title('Sample: Target Present', fontsize=12)
-        ax.legend(fontsize=8)
-        ax.grid(True, alpha=0.3, which='both')
-        
-        # Plot 3: Sample target-absent curves
-        ax = axes[1, 0]
-        target_absent_indices = np.where(labels == 0)[0][:5]  # First 5
-        for idx in target_absent_indices:
-            ax.loglog(time_us, decay_curves[idx], linewidth=2, label=label_strings[idx])
-        ax.set_xlabel('Time [μs]', fontsize=11)
-        ax.set_ylabel('-dBz/dt [T/s]', fontsize=11)
-        ax.set_title('Sample: Target Absent', fontsize=12)
-        ax.legend(fontsize=8)
-        ax.grid(True, alpha=0.3, which='both')
-        
-        # Plot 4: Simple stats
-        ax = axes[1, 1]
-        ax.text(0.5, 0.7, f'Total Samples: {len(decay_curves)}', 
-                ha='center', va='center', fontsize=14)
-        ax.text(0.5, 0.5, f'Target Present: {num_target_present}', 
-                ha='center', va='center', fontsize=14, color='green')
-        ax.text(0.5, 0.3, f'Target Absent: {num_target_absent}', 
-                ha='center', va='center', fontsize=14, color='blue')
-        ax.set_xlim(0, 1)
-        ax.set_ylim(0, 1)
-        ax.axis('off')
-        ax.set_title('Dataset Statistics', fontsize=12)
-        
-        plt.tight_layout()
-        plt.show()
-
-    def plot_training_history(self, history):
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
-        fig.suptitle('Training History', fontsize=16, fontweight='bold')
-        
-        # Plot accuracy
-        ax1.plot(history.history['accuracy'], label='Training Accuracy', linewidth=2)
-        ax1.plot(history.history['val_accuracy'], label='Validation Accuracy', linewidth=2)
-        ax1.set_xlabel('Epoch', fontsize=11)
-        ax1.set_ylabel('Accuracy', fontsize=11)
-        ax1.set_title('Model Accuracy', fontsize=12)
-        ax1.legend()
-        ax1.grid(True, alpha=0.3)
-        
-        # Plot loss
-        ax2.plot(history.history['loss'], label='Training Loss', linewidth=2)
-        ax2.plot(history.history['val_loss'], label='Validation Loss', linewidth=2)
-        ax2.set_xlabel('Epoch', fontsize=11)
-        ax2.set_ylabel('Loss', fontsize=11)
-        ax2.set_title('Model Loss', fontsize=12)
-        ax2.legend()
-        ax2.grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-        plt.show()
+        self.plotter.visualize_training_data(time, decay_curves, labels, label_strings, metadata)
 
     def plot_confusion_matrix(self, X_test, y_test, normalize=False):
-        from sklearn.metrics import confusion_matrix, classification_report
-        import seaborn as sns
-        
-        if self.model is None:
-            print("Error: No model loaded!")
-            return
-        
-        print("\\n" + "="*70)
-        print("Confusion Matrix Analysis")
-        print("="*70)
-        
-        # Get predictions
-        y_pred_proba = self.model.predict(X_test, verbose=0)
-        y_pred = np.argmax(y_pred_proba, axis=1)
-        
-        # Compute confusion matrix
-        cm = confusion_matrix(y_test, y_pred)
-        
-        if normalize:
-            cm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
-            fmt = '.2%'
-            title = 'Normalized Confusion Matrix'
-        else:
-            fmt = 'd'
-            title = 'Confusion Matrix'
-        
-        # Plot
-        fig, ax = plt.subplots(figsize=(8, 6))
-        sns.heatmap(cm, annot=True, fmt=fmt, cmap='Blues', square=True,
-                   xticklabels=['No Target', 'Target Present'],
-                   yticklabels=['No Target', 'Target Present'],
-                   cbar_kws={'label': 'Count' if not normalize else 'Proportion'},
-                   ax=ax, annot_kws={'size': 14})
-        
-        ax.set_ylabel('True Label', fontsize=14)
-        ax.set_xlabel('Predicted Label', fontsize=14)
-        ax.set_title(title, fontsize=16, fontweight='bold')
-        
-        plt.tight_layout()
-        plt.show()
-        
-        # Print classification report
-        print("\\nClassification Report:")
-        print("="*70)
-        target_names = ['No Target', 'Target Present']
-        print(classification_report(y_test, y_pred, target_names=target_names))
-        
-        return cm
+        self.plotter.set_model(self.model)
+        return self.plotter.plot_confusion_matrix(X_test, y_test, normalize)
     
-    def generate_model_summary_latex(self):
+    def plot_roc_curve(self, X_test, y_test):
+        self.plotter.set_model(self.model)
+        return self.plotter.plot_roc_curve(X_test, y_test)
+    
+    def plot_prediction_distribution(self, X_test, y_test):
+        self.plotter.set_model(self.model)
+        return self.plotter.plot_prediction_distribution(X_test, y_test)
+    
+    def plot_roc_pfa_pd(self, X_test, y_test, snr_db=None, num_thresholds=100):
+        self.plotter.set_model(self.model)
+        return self.plotter.plot_roc_pfa_pd(X_test, y_test, snr_db, num_thresholds)
+    
+    def plot_model_architecture(self, input_length=None, output_path='model_architecture.png'):
+        if self.model is None and input_length is not None:
+            self.build_model(input_length)
+        return self.plotter.plot_model_architecture(self.model, output_path)
+    
+    def plot_roc_multi_snr(self, logger, dataset_paths, snr_values):
+        self.plotter.set_model(self.model)
+        return self.plotter.plot_roc_multi_snr(self.model, logger, dataset_paths, snr_values)
+    
+    def generate_model_summary_latex(self, input_length=None, output_file=None):
         if self.model is None:
-            print("Error: No model loaded!")
-            return
+            if input_length is None:
+                print("No model loaded. Building default model with 50 time samples...")
+                input_length = 50
+            self.build_model(input_length)
         
-        print("\\n" + "="*70)
-        print("Model Parameters Summary (LaTeX)")
+        print("\n" + "="*70)
+        print("Generating LaTeX Model Summary")
         print("="*70)
         
-        # Count parameters
-        trainable_params = np.sum([np.prod(v.shape) for v in self.model.trainable_weights])
-        non_trainable_params = np.sum([np.prod(v.shape) for v in self.model.non_trainable_weights])
+        trainable_params = int(np.sum([np.prod(v.shape) for v in self.model.trainable_weights]))
+        non_trainable_params = int(np.sum([np.prod(v.shape) for v in self.model.non_trainable_weights]))
         total_params = trainable_params + non_trainable_params
         
-        # Generate LaTeX table
-        latex_code = r"""
-\\begin{table}[h]
-\\centering
-\\caption{Model Architecture Parameters}
-\\label{tab:model_params}
-\\begin{tabular}{|l|r|}
-\\hline
-\\textbf{Parameter Type} & \\textbf{Count} \\\\
-\\hline
+        flops_info = self.calculate_flops(verbose=False)
+        
+        latex_doc = r"""\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{amsmath}
+\usepackage{geometry}
+\usepackage{xcolor}
+\usepackage{colortbl}
+\geometry{margin=2.5cm}
+
+\title{TDEM Pulse Induction Classifier\\Model Architecture Report}
+\author{Generated by PiClassifier}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Model Overview}
+This document describes the neural network architecture for Time-Domain Electromagnetic (TDEM) 
+pulse induction signal classification. The model is designed for binary classification 
+to detect the presence or absence of metallic targets.
+
+\subsection{Architecture Summary}
+\begin{table}[H]
+\centering
+\caption{Model Parameters Summary}
+\label{tab:params_summary}
+\begin{tabular}{@{}lr@{}}
+\toprule
+\textbf{Parameter Category} & \textbf{Count} \\
+\midrule
 Trainable Parameters & """ + f"{trainable_params:,}" + r""" \\
 Non-trainable Parameters & """ + f"{non_trainable_params:,}" + r""" \\
-\\hline
-Total Parameters & """ + f"{total_params:,}" + r""" \\
-\\hline
-\\end{tabular}
-\\end{table}
+\midrule
+\textbf{Total Parameters} & \textbf{""" + f"{total_params:,}" + r"""} \\
+\bottomrule
+\end{tabular}
+\end{table}
 
-\\begin{table}[h]
-\\centering
-\\caption{Layer-wise Parameter Breakdown}
-\\label{tab:layer_params}
-\\begin{tabular}{|l|l|r|}
-\\hline
-\\textbf{Layer Name} & \\textbf{Layer Type} & \\textbf{Parameters} \\\\
-\\hline
+\subsection{Computational Complexity}
+\begin{table}[H]
+\centering
+\caption{Computational Cost per Inference}
+\label{tab:flops}
+\begin{tabular}{@{}lr@{}}
+\toprule
+\textbf{Metric} & \textbf{Value} \\
+\midrule
+Total FLOPs & """ + f"{flops_info['total_flops']:,}" + r""" \\
+MFLOPs & """ + f"{flops_info['mflops']:.3f}" + r""" \\
+GFLOPs & """ + f"{flops_info['gflops']:.6f}" + r""" \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Layer-by-Layer Architecture}
+
+\begin{table}[H]
+\centering
+\caption{Detailed Layer Configuration}
+\label{tab:layers}
+\begin{tabular}{@{}llrrl@{}}
+\toprule
+\textbf{Layer Name} & \textbf{Type} & \textbf{Output Shape} & \textbf{Params} & \textbf{Configuration} \\
+\midrule
 """
-        
-        # Add layer details
         for layer in self.model.layers:
-            layer_params = layer.count_params()
-            layer_name = layer.name.replace('_', '\\_')
+            layer_name = layer.name.replace('_', r'\_')
             layer_type = layer.__class__.__name__
-            latex_code += f"{layer_name} & {layer_type} & {layer_params:,} \\\\\\ \\n"
+            layer_params = layer.count_params()
+            
+            try:
+                output_shape = str(layer.output.shape)
+            except:
+                output_shape = str(layer.output_shape)
+            
+            config = ""
+            if 'Conv1D' in layer_type:
+                config = f"filters={layer.filters}, k={layer.kernel_size[0]}"
+            elif 'MaxPooling' in layer_type:
+                config = f"pool={layer.pool_size[0]}"
+            elif 'Dense' in layer_type:
+                config = f"units={layer.units}"
+            elif 'Dropout' in layer_type:
+                config = f"rate={layer.rate}"
+            elif 'BatchNorm' in layer_type:
+                config = "axis=-1"
+            
+            latex_doc += f"{layer_name} & {layer_type} & {output_shape} & {layer_params:,} & {config} \\\\\n"
         
-        latex_code += r"""\\hline
-\\end{tabular}
-\\end{table}
+        latex_doc += r"""\bottomrule
+\end{tabular}
+\end{table}
+
+\section{FLOP Breakdown by Layer Type}
+
+\begin{table}[H]
+\centering
+\caption{Computational Cost by Layer Type}
+\label{tab:flops_breakdown}
+\begin{tabular}{@{}lrr@{}}
+\toprule
+\textbf{Layer Type} & \textbf{FLOPs} & \textbf{Percentage} \\
+\midrule
+"""
+        type_flops = {}
+        for name, info in flops_info['breakdown'].items():
+            ltype = info['type']
+            if ltype not in type_flops:
+                type_flops[ltype] = 0
+            type_flops[ltype] += info['flops']
+        
+        for ltype, flops in sorted(type_flops.items(), key=lambda x: -x[1]):
+            if flops > 0:
+                pct = flops / flops_info['total_flops'] * 100
+                latex_doc += f"{ltype} & {flops:,} & {pct:.1f}\\% \\\\\n"
+        
+        latex_doc += r"""\midrule
+\textbf{Total} & \textbf{""" + f"{flops_info['total_flops']:,}" + r"""} & \textbf{100\%} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Model Architecture Diagram}
+The network follows a sequential convolutional architecture:
+
+\begin{enumerate}
+    \item \textbf{Input Layer}: 1D time-series signal
+    \item \textbf{Feature Extraction}: Three Conv1D blocks with filters (16$\rightarrow$32$\rightarrow$16)
+    \item \textbf{Regularization}: BatchNormalization and Dropout after each conv block
+    \item \textbf{Pooling}: MaxPooling1D to reduce temporal dimension
+    \item \textbf{Classification}: Flatten followed by Dense layers
+    \item \textbf{Output}: Softmax activation for binary classification
+\end{enumerate}
+
+\begin{figure}[H]
+\centering
+\fbox{\parbox{0.8\textwidth}{
+\centering
+\textbf{Model Flow}\\[0.5em]
+Input $(N, 1)$ $\rightarrow$ Conv1D(16) $\rightarrow$ BN $\rightarrow$ MaxPool(4) $\rightarrow$ Dropout\\
+$\downarrow$\\
+Conv1D(32) $\rightarrow$ BN $\rightarrow$ MaxPool(4) $\rightarrow$ Dropout\\
+$\downarrow$\\
+Conv1D(16) $\rightarrow$ BN $\rightarrow$ MaxPool(4) $\rightarrow$ Dropout\\
+$\downarrow$\\
+Flatten $\rightarrow$ Dense(32) $\rightarrow$ Dropout $\rightarrow$ Dense(2, softmax)
+}}
+\caption{Simplified model architecture flow diagram}
+\label{fig:model_flow}
+\end{figure}
+
+\end{document}
 """
         
-        print(latex_code)
-        print("\\n" + "="*70)
         print(f"Trainable Parameters: {trainable_params:,}")
         print(f"Non-trainable Parameters: {non_trainable_params:,}")
         print(f"Total Parameters: {total_params:,}")
+        print(f"Total FLOPs: {flops_info['total_flops']:,}")
+        
+        if output_file:
+            with open(output_file, 'w', encoding='utf-8') as f:
+                f.write(latex_doc)
+            print(f"\nLaTeX document saved to: {output_file}")
+        
         print("="*70)
         
-        return latex_code
+        return latex_doc
     
-    def plot_model_architecture(self):
-        from tensorflow.keras.utils import plot_model
-        
+    def generate_architecture_tikz(self, output_file=None):
         if self.model is None:
-            print("Error: No model loaded!")
-            return
-        
-        print("\\n" + "="*70)
-        print("Model Architecture Visualization")
-        print("="*70)
-        
-        # Save architecture diagram
-        output_path = 'model_architecture.png'
-        plot_model(self.model, to_file=output_path, show_shapes=True, 
-                  show_layer_names=True, rankdir='TB', expand_nested=True,
-                  dpi=150, show_layer_activations=True)
-        
-        print(f"\\n✓ Model architecture saved to: {output_path}")
-        
-        # Also create a detailed text representation
-        print("\\nDetailed Architecture:")
-        print("="*70)
-        self.model.summary()
-        
-        # Display the image
-        from PIL import Image
-        img = Image.open(output_path)
-        plt.figure(figsize=(12, 16))
-        plt.imshow(img)
-        plt.axis('off')
-        plt.title('TDEM Classifier Architecture', fontsize=16, fontweight='bold', pad=20)
-        plt.tight_layout()
-        plt.show()
-        
-        return output_path
-    
-    def plot_roc_curve(self, X_test, y_test):
-        from sklearn.metrics import roc_curve, auc
-        
-        if self.model is None:
-            print("Error: No model loaded!")
-            return
-        
-        print("\\n" + "="*70)
-        print("ROC Curve Analysis")
-        print("="*70)
-        
-        # Get prediction probabilities
-        y_pred_proba = self.model.predict(X_test, verbose=0)
-        y_pred_proba_target = y_pred_proba[:, 1]  # Probability of target present
-        
-        # Compute ROC curve
-        fpr, tpr, thresholds = roc_curve(y_test, y_pred_proba_target)
-        roc_auc = auc(fpr, tpr)
-        
-        # Plot
-        fig, ax = plt.subplots(figsize=(10, 8))
-        ax.plot(fpr, tpr, color='darkorange', lw=3, 
-               label=f'ROC curve (AUC = {roc_auc:.3f})')
-        ax.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--', label='Random Classifier')
-        
-        ax.set_xlim([0.0, 1.0])
-        ax.set_ylim([0.0, 1.05])
-        ax.set_xlabel('False Positive Rate', fontsize=14)
-        ax.set_ylabel('True Positive Rate', fontsize=14)
-        ax.set_title('Receiver Operating Characteristic (ROC) Curve', fontsize=16, fontweight='bold')
-        ax.legend(loc="lower right", fontsize=12)
-        ax.grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-        plt.show()
-        
-        print(f"\\n✓ ROC AUC Score: {roc_auc:.4f}")
-        
-        return fpr, tpr, roc_auc
-    
-    def plot_prediction_distribution(self, X_test, y_test):
-        if self.model is None:
-            print("Error: No model loaded!")
-            return
-        
-        print("\\n" + "="*70)
-        print("Prediction Probability Distribution")
-        print("="*70)
-        
-        # Get predictions
-        y_pred_proba = self.model.predict(X_test, verbose=0)
-        y_pred_proba_target = y_pred_proba[:, 1]
-        
-        # Separate by true label
-        target_present_probs = y_pred_proba_target[y_test == 1]
-        target_absent_probs = y_pred_proba_target[y_test == 0]
-        
-        # Plot
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
-        
-        # Histogram
-        ax1.hist(target_present_probs, bins=30, alpha=0.6, color='green', 
-                label='True: Target Present', edgecolor='black')
-        ax1.hist(target_absent_probs, bins=30, alpha=0.6, color='blue', 
-                label='True: No Target', edgecolor='black')
-        ax1.axvline(0.5, color='red', linestyle='--', linewidth=2, label='Decision Threshold')
-        ax1.set_xlabel('Predicted Probability (Target Present)', fontsize=12)
-        ax1.set_ylabel('Frequency', fontsize=12)
-        ax1.set_title('Prediction Probability Distribution', fontsize=14, fontweight='bold')
-        ax1.legend(fontsize=11)
-        ax1.grid(True, alpha=0.3)
-        
-        # Box plot
-        data_to_plot = [target_absent_probs, target_present_probs]
-        bp = ax2.boxplot(data_to_plot, labels=['True: No Target', 'True: Target Present'],
-                        patch_artist=True, showmeans=True)
-        bp['boxes'][0].set_facecolor('blue')
-        bp['boxes'][1].set_facecolor('green')
-        ax2.axhline(0.5, color='red', linestyle='--', linewidth=2, label='Decision Threshold')
-        ax2.set_ylabel('Predicted Probability (Target Present)', fontsize=12)
-        ax2.set_title('Prediction Confidence by True Label', fontsize=14, fontweight='bold')
-        ax2.legend(fontsize=11)
-        ax2.grid(True, alpha=0.3, axis='y')
-        
-        plt.tight_layout()
-        plt.show()
-
-
-class PiMultiClassClassifier():
-    
-    def __init__(self, conditioner=None):
-        self.model = None
-        self.conditioner = conditioner
-        self.num_classes = 4
-        self.class_names = ['No Target', 'Hollow Cylinder', 'Shredded Can', 'Solid Block']
-        
-        # Store split data
-        self.train_data = None
-        self.val_data = None
-        self.test_data = None
-        self.X_train = None
-        self.y_train = None
-        self.X_val = None
-        self.y_val = None
-        self.X_test = None
-        self.y_test = None
-    
-    def split_dataset(self, logger, source_path, train_ratio=0.7, val_ratio=0.15, test_ratio=0.15, save_to_file=False):
-        print("\\n" + "="*70)
-        print("Multi-Class Dataset Split")
-        print("="*70)
-        
-        if abs(train_ratio + val_ratio + test_ratio - 1.0) > 0.001:
-            raise ValueError("train_ratio + val_ratio + test_ratio must equal 1.0")
-        
-        time, decay_curves, labels, label_strings, metadata = logger.load_from_hdf5(source_path)
-        
-        target_types = metadata.get('target_types', np.full(len(labels), 0))
-        multi_labels = target_types.astype(int)
-        
-        num_samples = len(decay_curves)
-        print(f"Total samples: {num_samples}")
-        for class_idx in range(self.num_classes):
-            count = np.sum(multi_labels == class_idx)
-            print(f"  - {self.class_names[class_idx]}: {count}")
-        
-        # Shuffle indices
-        indices = np.random.permutation(num_samples)
-        
-        # Calculate split points
-        train_end = int(num_samples * train_ratio)
-        val_end = train_end + int(num_samples * val_ratio)
-        
-        train_idx = indices[:train_end]
-        val_idx = indices[train_end:val_end]
-        test_idx = indices[val_end:]
-        
-        print(f"\\nSplit sizes:")
-        print(f"  - Training: {len(train_idx)} samples ({len(train_idx)/num_samples*100:.1f}%)")
-        print(f"  - Validation: {len(val_idx)} samples ({len(val_idx)/num_samples*100:.1f}%)")
-        print(f"  - Testing: {len(test_idx)} samples ({len(test_idx)/num_samples*100:.1f}%)")
-        
-        # Prepare arrays
-        self.X_train = decay_curves[train_idx].reshape(len(train_idx), decay_curves.shape[1], 1)
-        self.y_train = multi_labels[train_idx]
-        self.X_val = decay_curves[val_idx].reshape(len(val_idx), decay_curves.shape[1], 1)
-        self.y_val = multi_labels[val_idx]
-        self.X_test = decay_curves[test_idx].reshape(len(test_idx), decay_curves.shape[1], 1)
-        self.y_test = multi_labels[test_idx]
-        
-        print("\\n✓ Multi-class dataset split complete!")
-        
-        return train_idx, val_idx, test_idx
-    
-    def build_model(self, num_samples):
-        inputs = keras.Input(shape=(num_samples, 1), name='input')
-        
-        # Block 1
-        x = layers.Conv1D(filters=24, kernel_size=7, padding='same', activation='relu', name='conv1')(inputs)
-        x = layers.BatchNormalization(name='bn1')(x)
-        x = layers.MaxPooling1D(pool_size=2, name='pool1')(x)
-        x = layers.Dropout(0.2, name='drop1')(x)
-        
-        # Block 2
-        x = layers.SeparableConv1D(filters=48, kernel_size=5, padding='same', activation='relu', name='sepconv1')(x)
-        x = layers.BatchNormalization(name='bn2')(x)
-        x = layers.MaxPooling1D(pool_size=2, name='pool2')(x)
-        x = layers.Dropout(0.2, name='drop2')(x)
-        
-        # Block 3
-        x = layers.SeparableConv1D(filters=96, kernel_size=3, padding='same', activation='relu', name='sepconv2')(x)
-        x = layers.BatchNormalization(name='bn3')(x)
-        x = layers.MaxPooling1D(pool_size=2, name='pool3')(x)
-        x = layers.Dropout(0.3, name='drop3')(x)
-        
-        # Global pooling
-        x = layers.GlobalAveragePooling1D(name='global_pool')(x)
-        
-        # Classifier head
-        x = layers.Dense(64, activation='relu', name='fc1')(x)
-        x = layers.Dropout(0.4, name='drop4')(x)
-        outputs = layers.Dense(self.num_classes, activation='softmax', name='output')(x)
-        
-        self.model = keras.Model(inputs, outputs, name='TDEM_MultiClass_Classifier')
-        
-        print("\\n" + "="*70)
-        print("Multi-Class Model Architecture")
-        print("="*70)
-        self.model.summary()
-        
-        return self.model
-    
-    def train_model(self, epochs=20, batch_size=32):
-        print("\\n" + "="*70)
-        print("Training Multi-Class Classifier")
-        print("="*70)
-        
-        if self.X_train is None:
-            print("Error: No training data. Run split_dataset() first.")
+            print("No model loaded.")
             return None
         
-        self.model.compile(
-            optimizer=keras.optimizers.Adam(learning_rate=0.001),
-            loss='sparse_categorical_crossentropy',
-            metrics=['accuracy']
-        )
-        
-        validation_data = None
-        if self.X_val is not None and self.y_val is not None:
-            validation_data = (self.X_val, self.y_val)
-        
-        history = self.model.fit(
-            self.X_train, self.y_train,
-            epochs=epochs,
-            batch_size=batch_size,
-            validation_data=validation_data,
-            verbose=1
-        )
-        
-        self.plot_training_history(history)
-        print("\\n✓ Training complete!")
-        
-        return history
-    
-    def validate_model(self):
-        if self.X_val is None:
-            print("Error: No validation data.")
-            return None, None
-        
-        print("\\n" + "="*70)
-        print("Validating Multi-Class Model")
+        print("\n" + "="*70)
+        print("Generating TikZ Architecture Diagram")
         print("="*70)
         
-        val_loss, val_accuracy = self.model.evaluate(self.X_val, self.y_val, verbose=1)
-        print(f"\\nLoss: {val_loss:.4f}, Accuracy: {val_accuracy:.4f}")
+        tikz_code = r"""\documentclass[border=10pt]{standalone}
+\usepackage{tikz}
+\usetikzlibrary{positioning,shapes.geometric,arrows.meta,fit,backgrounds}
+
+\begin{document}
+\begin{tikzpicture}[
+    node distance=0.8cm,
+    layer/.style={rectangle, draw, rounded corners, minimum width=3cm, minimum height=0.6cm, align=center, font=\small},
+    conv/.style={layer, fill=blue!20},
+    bn/.style={layer, fill=purple!15, minimum width=2.5cm},
+    pool/.style={layer, fill=yellow!25, minimum width=2.5cm},
+    drop/.style={layer, fill=red!15, minimum width=2.5cm},
+    dense/.style={layer, fill=green!20},
+    input/.style={layer, fill=gray!15},
+    arrow/.style={-{Stealth[scale=0.8]}, thick}
+]
+
+% Input
+\node[input] (input) {Input: (N, 1)};
+
+% Block 1
+\node[conv, below=of input] (conv1) {Conv1D: 16 filters, k=7};
+\node[bn, below=of conv1] (bn1) {BatchNorm};
+\node[pool, below=of bn1] (pool1) {MaxPool: 4};
+\node[drop, below=of pool1] (drop1) {Dropout: 0.2};
+
+% Block 2
+\node[conv, below=of drop1] (conv2) {Conv1D: 32 filters, k=5};
+\node[bn, below=of conv2] (bn2) {BatchNorm};
+\node[pool, below=of bn2] (pool2) {MaxPool: 4};
+\node[drop, below=of pool2] (drop2) {Dropout: 0.2};
+
+% Block 3
+\node[conv, below=of drop2] (conv3) {Conv1D: 16 filters, k=3};
+\node[bn, below=of conv3] (bn3) {BatchNorm};
+\node[pool, below=of bn3] (pool3) {MaxPool: 4};
+\node[drop, below=of pool3] (drop3) {Dropout: 0.3};
+
+% Flatten and dense
+\node[pool, below=of drop3] (flatten) {Flatten};
+\node[dense, below=of flatten] (fc1) {Dense: 32, ReLU};
+\node[drop, below=of fc1] (drop4) {Dropout: 0.4};
+\node[dense, below=of drop4] (output) {Dense: 2, Softmax};
+
+% Arrows
+\foreach \i/\j in {input/conv1, conv1/bn1, bn1/pool1, pool1/drop1,
+                   drop1/conv2, conv2/bn2, bn2/pool2, pool2/drop2,
+                   drop2/conv3, conv3/bn3, bn3/pool3, pool3/drop3,
+                   drop3/flatten, flatten/fc1, fc1/drop4, drop4/output} {
+    \draw[arrow] (\i) -- (\j);
+}
+
+% Block labels
+\begin{scope}[on background layer]
+    \node[draw=blue!50, dashed, rounded corners, fit=(conv1)(bn1)(pool1)(drop1), inner sep=3pt, label={[blue!70]left:Block 1}] {};
+    \node[draw=blue!50, dashed, rounded corners, fit=(conv2)(bn2)(pool2)(drop2), inner sep=3pt, label={[blue!70]left:Block 2}] {};
+    \node[draw=blue!50, dashed, rounded corners, fit=(conv3)(bn3)(pool3)(drop3), inner sep=3pt, label={[blue!70]left:Block 3}] {};
+\end{scope}
+
+\end{tikzpicture}
+\end{document}
+"""
         
-        return val_loss, val_accuracy
-    
-    def test_model(self):
-        if self.X_test is None:
-            print("Error: No test data.")
-            return None, None
+        if output_file:
+            with open(output_file, 'w', encoding='utf-8') as f:
+                f.write(tikz_code)
+            print(f"TikZ diagram saved to: {output_file}")
         
-        print("\\n" + "="*70)
-        print("Testing Multi-Class Model")
         print("="*70)
-        
-        test_loss, test_accuracy = self.model.evaluate(self.X_test, self.y_test, verbose=1)
-        print(f"\\nLoss: {test_loss:.4f}, Accuracy: {test_accuracy:.4f}")
-        
-        return test_loss, test_accuracy
-    
-    def plot_training_history(self, history):
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
-        fig.suptitle('Multi-Class Training History', fontsize=16, fontweight='bold')
-        
-        ax1.plot(history.history['accuracy'], label='Training Accuracy', linewidth=2)
-        if 'val_accuracy' in history.history:
-            ax1.plot(history.history['val_accuracy'], label='Validation Accuracy', linewidth=2)
-        ax1.set_xlabel('Epoch', fontsize=11)
-        ax1.set_ylabel('Accuracy', fontsize=11)
-        ax1.set_title('Model Accuracy', fontsize=12)
-        ax1.legend()
-        ax1.grid(True, alpha=0.3)
-        
-        ax2.plot(history.history['loss'], label='Training Loss', linewidth=2)
-        if 'val_loss' in history.history:
-            ax2.plot(history.history['val_loss'], label='Validation Loss', linewidth=2)
-        ax2.set_xlabel('Epoch', fontsize=11)
-        ax2.set_ylabel('Loss', fontsize=11)
-        ax2.set_title('Model Loss', fontsize=12)
-        ax2.legend()
-        ax2.grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-        plt.show()
-    
-    def plot_confusion_matrix(self, normalize=False):
-        from sklearn.metrics import confusion_matrix, classification_report
-        import seaborn as sns
-        
-        if self.model is None or self.X_test is None:
-            print("Error: No model or test data!")
-            return
-        
-        print("\\n" + "="*70)
-        print("Multi-Class Confusion Matrix")
-        print("="*70)
-        
-        # Get predictions
-        y_pred_proba = self.model.predict(self.X_test, verbose=0)
-        y_pred = np.argmax(y_pred_proba, axis=1)
-        
-        # Compute confusion matrix
-        cm = confusion_matrix(self.y_test, y_pred)
-        
-        if normalize:
-            cm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
-            fmt = '.2%'
-            title = 'Normalized Confusion Matrix'
-        else:
-            fmt = 'd'
-            title = 'Confusion Matrix'
-        
-        # Plot
-        fig, ax = plt.subplots(figsize=(10, 8))
-        sns.heatmap(cm, annot=True, fmt=fmt, cmap='Blues', square=True,
-                   xticklabels=self.class_names,
-                   yticklabels=self.class_names,
-                   cbar_kws={'label': 'Count' if not normalize else 'Proportion'},
-                   ax=ax, annot_kws={'size': 12})
-        
-        ax.set_ylabel('True Label', fontsize=14)
-        ax.set_xlabel('Predicted Label', fontsize=14)
-        ax.set_title(title, fontsize=16, fontweight='bold')
-        plt.xticks(rotation=45, ha='right')
-        plt.yticks(rotation=0)
-        
-        plt.tight_layout()
-        plt.show()
-        
-        # Print classification report
-        print("\\nClassification Report:")
-        print("="*70)
-        print(classification_report(self.y_test, y_pred, target_names=self.class_names))
-        
-        return cm
+        return tikz_code
 
 
 

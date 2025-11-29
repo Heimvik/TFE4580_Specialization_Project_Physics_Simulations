@@ -1,0 +1,346 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath}
+\usepackage{amsfonts}
+\usepackage{amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{geometry}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, positioning, shapes.geometric}
+
+\geometry{margin=2.5cm}
+
+\title{Computational Cost Analysis of 1D Convolutional Layers\\
+\large FLOP Calculation for Conv1D Operations}
+\author{TFE4580 Specialization Project}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\section{Introduction}
+
+In deep learning, understanding the computational cost of neural network operations is crucial for:
+\begin{itemize}
+    \item Deployment on resource-constrained devices (embedded systems, edge devices)
+    \item Estimating inference time and power consumption
+    \item Comparing different network architectures
+    \item Optimizing network design for real-time applications
+\end{itemize}
+
+For 1D Convolutional Neural Networks (CNNs) used in time series classification, the convolutional layers typically dominate the computational cost, often accounting for 90-95\% of total FLOPs. This document provides a thorough derivation of FLOP calculations for Conv1D layers.
+
+\section{Definitions and Notation}
+
+\subsection{Input Tensor}
+The input to a Conv1D layer is a 3D tensor with shape:
+\begin{equation}
+    \mathbf{X} \in \mathbb{R}^{N \times L_{\text{in}} \times C_{\text{in}}}
+\end{equation}
+where:
+\begin{itemize}
+    \item $N$ = batch size (number of samples)
+    \item $L_{\text{in}}$ = input sequence length (number of time steps)
+    \item $C_{\text{in}}$ = number of input channels (features per time step)
+\end{itemize}
+
+\subsection{Convolutional Kernel}
+The learnable weight tensor (kernel) has shape:
+\begin{equation}
+    \mathbf{W} \in \mathbb{R}^{K \times C_{\text{in}} \times C_{\text{out}}}
+\end{equation}
+where:
+\begin{itemize}
+    \item $K$ = kernel size (temporal receptive field)
+    \item $C_{\text{in}}$ = number of input channels
+    \item $C_{\text{out}}$ = number of output channels (filters)
+\end{itemize}
+
+\subsection{Output Tensor}
+The output tensor has shape:
+\begin{equation}
+    \mathbf{Y} \in \mathbb{R}^{N \times L_{\text{out}} \times C_{\text{out}}}
+\end{equation}
+where $L_{\text{out}}$ depends on the padding mode and stride.
+
+\section{Output Length Calculation}
+
+The output sequence length $L_{\text{out}}$ is determined by:
+
+\subsection{Valid Padding (No Padding)}
+\begin{equation}
+    L_{\text{out}} = \left\lfloor \frac{L_{\text{in}} - K}{s} \right\rfloor + 1
+\end{equation}
+where $s$ is the stride (typically $s=1$ for feature extraction).
+
+\subsection{Same Padding (Zero Padding)}
+With ``same'' padding, the input is padded with zeros such that:
+\begin{equation}
+    L_{\text{out}} = \left\lceil \frac{L_{\text{in}}}{s} \right\rceil
+\end{equation}
+For stride $s=1$:
+\begin{equation}
+    L_{\text{out}} = L_{\text{in}}
+\end{equation}
+
+\section{FLOP Calculation Derivation}
+
+\subsection{Single Output Element}
+
+To compute a single output element $y_{n,l,c_{\text{out}}}$, we perform the following operation:
+
+\begin{equation}
+    y_{n,l,c_{\text{out}}} = \sum_{k=0}^{K-1} \sum_{c=0}^{C_{\text{in}}-1} x_{n,l \cdot s + k,c} \cdot w_{k,c,c_{\text{out}}} + b_{c_{\text{out}}}
+\end{equation}
+
+where $b_{c_{\text{out}}}$ is the optional bias term.
+
+\subsection{Multiply-Accumulate (MAC) Operations}
+
+Each output element requires:
+\begin{itemize}
+    \item \textbf{Multiplications:} $K \times C_{\text{in}}$ (one per kernel weight)
+    \item \textbf{Additions:} $K \times C_{\text{in}} - 1$ (summing the products)
+    \item \textbf{Bias addition:} 1 (if bias is used)
+\end{itemize}
+
+\subsection{Definition of FLOPs}
+
+In deep learning, a \textbf{FLOP} (Floating Point Operation) typically refers to a single floating-point arithmetic operation. However, conventions vary:
+
+\begin{itemize}
+    \item \textbf{Multiply-Add as 2 FLOPs:} Each multiply-accumulate (MAC) operation consists of one multiplication and one addition, counted as 2 FLOPs.
+    \item \textbf{Multiply-Add as 1 FLOP:} Some sources count each MAC as a single FLOP (also called a ``fused multiply-add'' or FMA).
+\end{itemize}
+
+\textbf{In this document, we use the convention that 1 MAC = 2 FLOPs.}
+
+\subsection{FLOPs per Output Element}
+
+Using the 2-FLOP-per-MAC convention:
+
+\begin{equation}
+    \text{FLOPs}_{\text{element}} = 2 \times K \times C_{\text{in}}
+\end{equation}
+
+If bias is included:
+\begin{equation}
+    \text{FLOPs}_{\text{element}} = 2 \times K \times C_{\text{in}} + 1
+\end{equation}
+
+\subsection{Total FLOPs for Conv1D Layer}
+
+The total number of output elements is:
+\begin{equation}
+    N_{\text{elements}} = L_{\text{out}} \times C_{\text{out}}
+\end{equation}
+
+Therefore, the total FLOPs for a Conv1D layer (per sample) is:
+
+\begin{equation}
+    \boxed{\text{FLOPs}_{\text{Conv1D}} = 2 \times K \times C_{\text{in}} \times C_{\text{out}} \times L_{\text{out}}}
+\end{equation}
+
+With bias:
+\begin{equation}
+    \boxed{\text{FLOPs}_{\text{Conv1D}} = 2 \times K \times C_{\text{in}} \times C_{\text{out}} \times L_{\text{out}} + C_{\text{out}} \times L_{\text{out}}}
+\end{equation}
+
+\section{Example Calculation: PiClassifier Architecture}
+
+Consider the PiClassifier CNN with the following architecture (input length = 50):
+
+\subsection{Layer Specifications}
+
+\begin{table}[h]
+\centering
+\caption{Conv1D Layer Parameters in PiClassifier}
+\label{tab:layers}
+\begin{tabular}{@{}lcccccr@{}}
+\toprule
+Layer & $C_{\text{in}}$ & $C_{\text{out}}$ & $K$ & Padding & $L_{\text{in}}$ & $L_{\text{out}}$ \\
+\midrule
+conv1 & 1 & 16 & 7 & same & 50 & 50 \\
+conv2 & 16 & 32 & 5 & same & 25 & 25 \\
+conv3 & 32 & 64 & 3 & same & 12 & 12 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textit{Note: $L_{\text{in}}$ for conv2 and conv3 is reduced by MaxPooling1D(pool\_size=2) after the previous layer.}
+
+\subsection{FLOP Calculation for Each Layer}
+
+\subsubsection{Layer 1: conv1}
+\begin{align}
+    \text{FLOPs}_{\text{conv1}} &= 2 \times K \times C_{\text{in}} \times C_{\text{out}} \times L_{\text{out}} \\
+    &= 2 \times 7 \times 1 \times 16 \times 50 \\
+    &= 2 \times 5600 \\
+    &= \mathbf{11,200} \text{ FLOPs}
+\end{align}
+
+With bias ($+16 \times 50 = 800$):
+\begin{equation}
+    \text{FLOPs}_{\text{conv1}} = 11,200 + 800 = \mathbf{12,000} \text{ FLOPs}
+\end{equation}
+
+\subsubsection{Layer 2: conv2}
+\begin{align}
+    \text{FLOPs}_{\text{conv2}} &= 2 \times 5 \times 16 \times 32 \times 25 \\
+    &= 2 \times 64,000 \\
+    &= \mathbf{128,000} \text{ FLOPs}
+\end{align}
+
+With bias ($+32 \times 25 = 800$):
+\begin{equation}
+    \text{FLOPs}_{\text{conv2}} = 128,000 + 800 = \mathbf{128,800} \text{ FLOPs}
+\end{equation}
+
+\subsubsection{Layer 3: conv3}
+\begin{align}
+    \text{FLOPs}_{\text{conv3}} &= 2 \times 3 \times 32 \times 64 \times 12 \\
+    &= 2 \times 73,728 \\
+    &= \mathbf{147,456} \text{ FLOPs}
+\end{align}
+
+With bias ($+64 \times 12 = 768$):
+\begin{equation}
+    \text{FLOPs}_{\text{conv3}} = 147,456 + 768 = \mathbf{148,224} \text{ FLOPs}
+\end{equation}
+
+\subsection{Total Convolutional FLOPs}
+
+\begin{align}
+    \text{FLOPs}_{\text{total conv}} &= \text{FLOPs}_{\text{conv1}} + \text{FLOPs}_{\text{conv2}} + \text{FLOPs}_{\text{conv3}} \\
+    &= 12,000 + 128,800 + 148,224 \\
+    &= \mathbf{289,024} \text{ FLOPs}
+\end{align}
+
+\subsection{Comparison with Total Network FLOPs}
+
+The complete PiClassifier network (including BatchNorm, Pooling, Dense layers) has approximately 306,776 FLOPs per inference. The convolutional layers account for:
+
+\begin{equation}
+    \frac{289,024}{306,776} \approx \mathbf{94.2\%}
+\end{equation}
+
+This confirms that \textbf{convolutional layers dominate the computational cost}.
+
+\section{Computational Complexity Analysis}
+
+\subsection{Big-O Notation}
+
+The computational complexity of a Conv1D layer is:
+\begin{equation}
+    O(K \times C_{\text{in}} \times C_{\text{out}} \times L_{\text{out}})
+\end{equation}
+
+This is linear in each of the four dimensions. Key observations:
+\begin{itemize}
+    \item \textbf{Kernel size $K$:} Linear impact. Doubling $K$ doubles FLOPs.
+    \item \textbf{Input channels $C_{\text{in}}$:} Linear impact. Each input channel adds to the computation.
+    \item \textbf{Output channels $C_{\text{out}}$:} Linear impact. Each filter requires a full convolution.
+    \item \textbf{Sequence length $L_{\text{out}}$:} Linear impact. Longer sequences require more operations.
+\end{itemize}
+
+\subsection{Design Trade-offs}
+
+\begin{table}[h]
+\centering
+\caption{Design Strategies to Reduce Conv1D FLOPs}
+\label{tab:tradeoffs}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Strategy & FLOP Reduction & Trade-off \\
+\midrule
+Reduce kernel size $K$ & Linear & May miss longer temporal patterns \\
+Reduce filters $C_{\text{out}}$ & Linear & Reduced feature capacity \\
+Add pooling layers & Reduces $L_{\text{out}}$ & May lose fine temporal resolution \\
+Use depthwise separable conv & $\approx C_{\text{in}}$x reduction & Slightly different features \\
+Use strided convolution & Reduces $L_{\text{out}}$ by $s$ & Faster but coarser representation \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Real-World Performance Estimates}
+
+\subsection{Inference Time Estimation}
+
+Modern hardware can achieve varying FLOP throughput:
+
+\begin{table}[h]
+\centering
+\caption{Estimated Inference Time for PiClassifier (306,776 FLOPs)}
+\label{tab:inference}
+\begin{tabular}{@{}llr@{}}
+\toprule
+Platform & Approx. GFLOPS & Estimated Inference Time \\
+\midrule
+CPU (Intel i7, single core) & 10-50 & $\sim$6--31 $\mu$s \\
+GPU (NVIDIA RTX 3080) & 29,770 & $\sim$0.01 $\mu$s \\
+Raspberry Pi 4 & 1-5 & $\sim$61--307 $\mu$s \\
+Microcontroller (ARM Cortex-M4) & 0.01-0.1 & $\sim$3--31 ms \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textit{Note: Actual performance depends on memory bandwidth, batch size, and implementation efficiency.}
+
+\subsection{Comparison with Literature}
+
+\begin{table}[h]
+\centering
+\caption{FLOP Comparison with Literature Models}
+\label{tab:comparison}
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+Model & Total FLOPs & Conv FLOPs & Parameters \\
+\midrule
+PiClassifier (ours) & 307K & 289K & 11.5K \\
+Thomas2024 1D-CNN & $\sim$13M & $\sim$12.5M & $\sim$1.3M \\
+Minhas2024 DL-MMD & $\sim$1.2M & $\sim$1.1M & $\sim$50K \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The PiClassifier achieves a \textbf{40x reduction in FLOPs} compared to Thomas2024, while maintaining competitive accuracy.
+
+\section{Summary Formula}
+
+For a Conv1D layer with:
+\begin{itemize}
+    \item Kernel size $K$
+    \item Input channels $C_{\text{in}}$
+    \item Output channels (filters) $C_{\text{out}}$
+    \item Output length $L_{\text{out}}$
+    \item Bias enabled
+\end{itemize}
+
+The total FLOPs is:
+
+\begin{equation}
+    \boxed{\text{FLOPs} = L_{\text{out}} \times C_{\text{out}} \times (2 \times K \times C_{\text{in}} + 1)}
+\end{equation}
+
+Or equivalently:
+\begin{equation}
+    \boxed{\text{FLOPs} = 2 \times K \times C_{\text{in}} \times C_{\text{out}} \times L_{\text{out}} + C_{\text{out}} \times L_{\text{out}}}
+\end{equation}
+
+\section{Conclusion}
+
+Understanding the FLOP calculation for Conv1D layers is essential for:
+\begin{enumerate}
+    \item \textbf{Architecture design:} Choosing appropriate kernel sizes and filter counts
+    \item \textbf{Deployment planning:} Estimating computational requirements for target hardware
+    \item \textbf{Model comparison:} Objectively comparing network efficiency
+    \item \textbf{Optimization:} Identifying bottlenecks for acceleration
+\end{enumerate}
+
+For the PiClassifier, the convolutional layers account for approximately 94\% of total FLOPs, confirming that \textbf{Conv1D analysis is sufficient for understanding the network's computational cost}.
+
+\end{document}

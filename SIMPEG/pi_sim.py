@@ -13,10 +13,74 @@ from datetime import datetime
 import os
 
 from pi_config import PiConfig
-from pi_plotter import PiPlotter
+from pi_plotter import PiPlotter, ClassifierPlotter
 from pi_logger import PiLogger
 from pi_classifier import PiClassifier
 from pi_conditioner import PiConditioner
+
+
+class SystemStatus:
+    def __init__(self):
+        self.dataset_path = None
+        self.dataset_samples = 0
+        self.dataset_target_present = 0
+        self.dataset_target_absent = 0
+        self.model_path = None
+        self.model_params = 0
+        self.model_trained = False
+        self.train_samples = 0
+        self.val_samples = 0
+        self.test_samples = 0
+    
+    def set_dataset(self, path, samples=0, target_present=0, target_absent=0):
+        self.dataset_path = path
+        self.dataset_samples = samples
+        self.dataset_target_present = target_present
+        self.dataset_target_absent = target_absent
+    
+    def set_model(self, path=None, params=0, trained=False):
+        self.model_path = path
+        self.model_params = params
+        self.model_trained = trained
+    
+    def set_splits(self, train=0, val=0, test=0):
+        self.train_samples = train
+        self.val_samples = val
+        self.test_samples = test
+    
+    def display(self):
+        print("\n┌" + "─"*68 + "┐")
+        print("│" + " STATUS ".center(68) + "│")
+        print("├" + "─"*68 + "┤")
+        
+        if self.dataset_path:
+            ds_name = os.path.basename(self.dataset_path)
+            if len(ds_name) > 40:
+                ds_name = ds_name[:37] + "..."
+            print(f"│  Dataset: {ds_name:<55} │")
+            print(f"│    Samples: {self.dataset_samples:<5} (Target: {self.dataset_target_present}, No-Target: {self.dataset_target_absent})" + " "*10 + "│")
+            if self.train_samples > 0:
+                print(f"│    Splits: Train={self.train_samples}, Val={self.val_samples}, Test={self.test_samples}" + " "*20 + "│")
+        else:
+            print("│  Dataset: None loaded" + " "*45 + "│")
+        
+        print("├" + "─"*68 + "┤")
+        
+        if self.model_path:
+            model_name = os.path.basename(self.model_path)
+            if len(model_name) > 40:
+                model_name = model_name[:37] + "..."
+            status = "Trained" if self.model_trained else "Untrained"
+            print(f"│  Model: {model_name:<57} │")
+            print(f"│    Parameters: {self.model_params:,}, Status: {status}" + " "*25 + "│")
+        elif self.model_params > 0:
+            status = "Trained" if self.model_trained else "Built (untrained)"
+            print(f"│  Model: In-memory ({status})" + " "*40 + "│")
+            print(f"│    Parameters: {self.model_params:,}" + " "*40 + "│")
+        else:
+            print("│  Model: None loaded" + " "*47 + "│")
+        
+        print("└" + "─"*68 + "┘")
 
 
 class PiSimulator:
@@ -67,6 +131,7 @@ class PiSimulator:
             top_z = target_z_val + self.cfg.target_height/2
             bottom_z = target_z_val - self.cfg.target_height/2
             
+            #Target type 1: Hollow cylinder
             if target_type == 1:
                 unique_r = np.unique(r)
                 min_cell_width = np.min(np.diff(unique_r[unique_r > 0])) if len(unique_r) > 1 else 0.01
@@ -85,30 +150,59 @@ class PiSimulator:
                 
                 ind_target = ind_walls | ind_top | ind_bottom
 
+            # Target type 2: Shredded fragments - hardcoded pattern
             elif target_type == 2:
-                z_norm = (z - target_z_val) / self.cfg.target_height
-                crumple_factor = 1.0 + 0.2 * np.sin(10 * z_norm)
+                r_max = 0.2
+                z_range = 0.1
+                z_mid = target_z_val
                 
-                effective_radius = self.cfg.target_radius * crumple_factor
+                candidates = np.where(
+                    (np.abs(z - z_mid) <= z_range) & 
+                    (r <= r_max)
+                )[0]
                 
-                r_norm = r / self.cfg.target_radius
-                radial_pattern = np.sin(8 * r_norm * np.pi) * 0.3 + 0.7
+                if len(candidates) == 0:
+                    ind_target = np.zeros(len(r), dtype=bool)
+                else:
+                    r_cand = r[candidates]
+                    z_cand = z[candidates]
+                    
+                    unique_r = np.unique(np.round(r_cand, 4))
+                    unique_z = np.unique(np.round(z_cand - z_mid, 4))
+                    
+                    pattern = [
+                        (0, 0), (0, 1), (0, 2),
+                        (1, 1), (1, 3),
+                        (2, 0), (2, 2), (2, 4),
+                        (3, 1), (3, 3),
+                        (4, 0), (4, 2),
+                        (5, 1), (5, 3), (5, 4)
+                    ]
+                    
+                    ind_target = np.zeros(len(r), dtype=bool)
+                    
+                    for r_idx, z_idx in pattern:
+                        if r_idx < len(unique_r) and z_idx < len(unique_z):
+                            target_r = unique_r[r_idx]
+                            target_z_offset = unique_z[z_idx]
+                            
+                            cell_idx = np.where(
+                                (np.abs(r - target_r) < 0.005) & 
+                                (np.abs((z - z_mid) - target_z_offset) < 0.005)
+                            )[0]
+                            
+                            if len(cell_idx) > 0:
+                                ind_target[cell_idx[0]] = True
                 
-                ind_target = (
-                    (r <= effective_radius) & 
-                    (z >= bottom_z) & 
-                    (z <= top_z) &
-                    (radial_pattern > 0.5)
-                )
-
+            # Target type 3: Solid box
             elif target_type == 3:
-                box_half_width = self.cfg.target_radius
-                equivalent_radius = box_half_width * 1.12837
-                
+                box_half_width = 2*self.cfg.target_radius
+                box_height = self.cfg.target_height
+
                 ind_target = (
-                    (r <= equivalent_radius) & 
+                    (r <= box_half_width) & 
                     (z <= top_z) & 
-                    (z >= bottom_z)
+                    (z >= top_z - box_height)
                 )
 
             else:
@@ -144,7 +238,7 @@ class PiSimulator:
             hr = [(0.01, 15), (0.01, 15, 1.3), (0.05, 10, 1.5)]
             hphi = 1
             hz = [(0.01, 10, -1.3), (0.01, 30), (0.01, 10, 1.3)]
-            mesh = CylindricalMesh([hr, hphi, hz], x0="00C")
+            mesh = CylindricalMesh([hr, hphi, hz], origin=[0, 0, target_z_val])
             create_plotting_metadata = True
         else:
             create_plotting_metadata = False
@@ -272,83 +366,40 @@ def run_simulations(simulator, logger, loop_z_range, target_z_range,
     print(f"\n Complete: {total_sims} simulations written to {output_file}")
     return output_file
 
-def find_hdf5_files(root_dir='Datasets'):
-    hdf5_files = []
-    if not os.path.exists(root_dir):
-        return hdf5_files
-    
-    for dirpath, dirnames, filenames in os.walk(root_dir):
-        for filename in filenames:
-            if filename.endswith('.h5') or filename.endswith('.hdf5'):
-                full_path = os.path.join(dirpath, filename)
-                hdf5_files.append(full_path)
-    
-    return sorted(hdf5_files)
-
-def select_hdf5_file():
-    hdf5_files = find_hdf5_files('Datasets')
-    
-    if not hdf5_files:
-        print("\nNo HDF5 files found in ./Datasets directory.")
-        manual_input = input("Enter HDF5 file path manually (or 'q' to cancel): ").strip()
-        if manual_input.lower() == 'q':
-            return None
-        return manual_input
-    
-    print("\n" + "="*70)
-    print("Available HDF5 files:")
-    print("="*70)
-    
-    for idx, filepath in enumerate(hdf5_files):
-        file_size = os.path.getsize(filepath) / (1100 * 1100)
-        modified_time = datetime.fromtimestamp(os.path.getmtime(filepath))
-        print(f"  [{idx+1}] {filepath}")
-        print(f"      Size: {file_size:.2f} MB | Modified: {modified_time.strftime('%Y-%m-%d %H:%M:%S')}")
-    
-    print(f"\nTotal files found: {len(hdf5_files)}")
-    print("Enter file number, or type path manually, or 'q' to cancel")
-    
-    user_input = input("Your selection: ").strip()
-    
-    if user_input.lower() == 'q':
-        return None
-    
+def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifier, conditioner, status):
     try:
-        idx = int(user_input) - 1
-        if 0 <= idx < len(hdf5_files):
-            return hdf5_files[idx]
-        else:
-            print(f"Invalid selection. Index out of range.")
-            return None
-    except ValueError:
-        if os.path.exists(user_input):
-            return user_input
-        else:
-            print(f"File not found: {user_input}")
-            return None
-
-def get_split_dataset_path(base_path, split_type):
-    """
-    Get the path to a split dataset file.
+        with h5py.File(hdf5_file, 'r') as f:
+            num_sims = f['metadata'].attrs['num_simulations']
+            num_present = f['metadata'].attrs['num_target_present']
+            num_absent = f['metadata'].attrs['num_target_absent']
+            status.set_dataset(hdf5_file, num_sims, num_present, num_absent)
+    except:
+        status.set_dataset(hdf5_file)
     
-    Args:
-        base_path: Original dataset path
-        split_type: 'train', 'val', or 'test'
+    # Check for existing splits
+    train_path = logger.get_split_path(hdf5_file, 'train')
+    val_path = logger.get_split_path(hdf5_file, 'val')
+    test_path = logger.get_split_path(hdf5_file, 'test')
     
-    Returns:
-        Path to split dataset if it exists, otherwise None
-    """
-    base_without_ext = base_path.replace('.h5', '').replace('.hdf5', '')
-    split_path = f"{base_without_ext}_{split_type}.h5"
+    if train_path and val_path and test_path:
+        try:
+            with h5py.File(train_path, 'r') as f:
+                train_count = f['metadata'].attrs['num_simulations']
+            with h5py.File(val_path, 'r') as f:
+                val_count = f['metadata'].attrs['num_simulations']
+            with h5py.File(test_path, 'r') as f:
+                test_count = f['metadata'].attrs['num_simulations']
+            status.set_splits(train_count, val_count, test_count)
+        except:
+            pass
     
-    if os.path.exists(split_path):
-        return split_path
-    else:
-        return None
-
-def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifier, conditioner):
-    """Menu for operations on a loaded dataset"""
+    # Update model status if classifier has a model
+    if classifier.model is not None:
+        status.set_model(None, classifier.model.count_params(), trained=True)
+    
     while True:
+        status.display()
+        
         print("\n" + "="*70)
         print(f"Dataset Operations: {os.path.basename(hdf5_file)}")
         print("="*70)
@@ -361,6 +412,8 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
         print("  6. Validate classifier")
         print("  7. Test classifier")
         print("  8. Classification plots")
+        print("  9. Model analysis (FLOPs, parameters, architecture)")
+        print("  10. Save/Load model")
         print("  [b] Back to main menu")
         
         choice = input("\nSelect option: ").strip().lower()
@@ -393,6 +446,19 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                 train_path, val_path, test_path = classifier.split_dataset(
                     logger, hdf5_file, train_ratio, val_ratio, test_ratio, save_to_file=True
                 )
+                
+                # Update status with split info
+                if train_path:
+                    try:
+                        with h5py.File(train_path, 'r') as f:
+                            train_count = f['metadata'].attrs['num_simulations']
+                        with h5py.File(val_path, 'r') as f:
+                            val_count = f['metadata'].attrs['num_simulations']
+                        with h5py.File(test_path, 'r') as f:
+                            test_count = f['metadata'].attrs['num_simulations']
+                        status.set_splits(train_count, val_count, test_count)
+                    except:
+                        pass
             except Exception as e:
                 print(f"Error: {e}")
                 import traceback
@@ -409,8 +475,9 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                 time, decay_curves, labels, label_strings, metadata = logger.load_from_hdf5(hdf5_file)
                 
                 print("Applying conditioning (log-scale + min-max normalization)...")
-                time_c, decay_c, labels_c, label_strings_c, metadata_c = conditioner.condition_dataset(
-                    time, decay_curves, labels, label_strings, metadata
+                I_0 = (np.pi * cfg.tx_radius**2 * cfg.tx_n_turns) * decay_curves
+                I_1 = conditioner.condition_dataset(
+                    I_0
                 )
                 
                 # Save conditioned dataset
@@ -419,20 +486,20 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                 conditioned_file = os.path.join(base_dir, f"{base_name}_conditioned.h5")
                 
                 print(f"\nSaving conditioned dataset to: {conditioned_file}")
-                logger.initialize_hdf5(conditioned_file, metadata_c['num_target_present'], 
-                                     metadata_c['num_target_absent'])
+                logger.initialize_hdf5(conditioned_file, metadata['num_target_present'], 
+                                     metadata['num_target_absent'])
                 
-                for i in range(len(decay_c)):
+                for i in range(len(decay_curves)):
                     sim_metadata = {
-                        'loop_z': metadata_c['loop_z'][i],
-                        'target_z': metadata_c['target_z'][i],
-                        'target_present': labels_c[i] == 1,
-                        'label': label_strings_c[i]
+                        'loop_z': metadata['loop_z'][i],
+                        'target_z': metadata['target_z'][i],
+                        'target_present': labels[i] == 1,
+                        'label': label_strings[i]
                     }
-                    logger.store_to_hdf5(conditioned_file, i, time_c, decay_c[i], 
-                                       label_strings_c[i], sim_metadata)
+                    logger.store_to_hdf5(conditioned_file, i, time, I_1[i], 
+                                       label_strings[i], sim_metadata)
                 
-                logger.finalize_hdf5(conditioned_file, len(time_c))
+                logger.finalize_hdf5(conditioned_file, len(time))
                 
                 print(f"\n✓ Conditioned dataset saved!")
                 print(f"  File: {os.path.basename(conditioned_file)}")
@@ -456,7 +523,7 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                 print("TRAINING MODE")
                 print(f"{'='*70}")
 
-                train_path = get_split_dataset_path(hdf5_file, 'train')
+                train_path = logger.get_split_path(hdf5_file, 'train')
                 if not train_path:
                     print(f"\nNo training split found.")
                     continue
@@ -467,7 +534,7 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                 X_train = decay_curves.reshape(decay_curves.shape[0], decay_curves.shape[1], 1)
                 y_train = labels
                 
-                val_path = get_split_dataset_path(hdf5_file, 'val')
+                val_path = logger.get_split_path(hdf5_file, 'val')
                 if val_path:
                     _, decay_curves_val, labels_val, _, _ = logger.load_from_hdf5(val_path)
                     X_val = decay_curves_val.reshape(decay_curves_val.shape[0], decay_curves_val.shape[1], 1)
@@ -483,6 +550,9 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                 
                 classifier.build_model(num_samples)
                 classifier.train_model(X_train, y_train, X_val, y_val, epochs=epochs, batch_size=batch_size)
+                
+                # Update status
+                status.set_model(None, classifier.model.count_params(), trained=True)
                     
             except Exception as e:
                 print(f"Error: {e}")
@@ -499,7 +569,7 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                 print("VALIDATION MODE")
                 print(f"{'='*70}")
                     
-                val_path = get_split_dataset_path(hdf5_file, 'val')
+                val_path = logger.get_split_path(hdf5_file, 'val')
                 if not val_path:
                     print(f"\nNo validation split found.")
                     continue
@@ -525,7 +595,7 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                 print("TESTING MODE")
                 print(f"{'='*70}")
                 
-                test_path = get_split_dataset_path(hdf5_file, 'test')
+                test_path = logger.get_split_path(hdf5_file, 'test')
                 if not test_path:
                     print(f"\nNo test split found.")
                     continue
@@ -545,13 +615,12 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
             # Classification plots submenu
             try:
                 if classifier.model is None:
-                    print("\\nNo model loaded. Train a model first (option 5).")
+                    print("\nNo model loaded. Train a model first (option 5) or load one (option 10).")
                     continue
                 
-                # Need test data for plots
-                test_path = get_split_dataset_path(hdf5_file, 'test')
+                test_path = logger.get_split_path(hdf5_file, 'test')
                 if not test_path:
-                    print(f"\\nNo test split found. Please split the dataset first (option 3).")
+                    print(f"\nNo test split found. Please split the dataset first (option 3).")
                     continue
                 
                 print(f"Loading test data: {os.path.basename(test_path)}")
@@ -561,46 +630,255 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                 
                 # Classification plots submenu
                 while True:
-                    print(f"\\n{'='*70}")
+                    print(f"\n{'='*70}")
                     print("Classification Plots")
                     print(f"{'='*70}")
-                    print("\\nAvailable plots:")
+                    print("\nAvailable plots:")
                     print("  [1] Confusion Matrix")
                     print("  [2] Normalized Confusion Matrix")
-                    print("  [3] Model Architecture Diagram")
-                    print("  [4] Model Parameters (LaTeX)")
-                    print("  [5] ROC Curve")
-                    print("  [6] Prediction Distribution")
-                    print("  [7] All Plots")
+                    print("  [3] ROC Curve (standard)")
+                    print("  [4] ROC Curve (Pd vs Pfa - detection theory)")
+                    print("  [5] Prediction Distribution")
+                    print("  [6] All Classification Plots")
                     print("  [b] Back")
                     
-                    plot_choice = input("\\nSelect plot: ").strip().lower()
+                    plot_choice = input("\nSelect plot: ").strip().lower()
                     
                     if plot_choice == '1':
                         classifier.plot_confusion_matrix(X_test, y_test, normalize=False)
                     elif plot_choice == '2':
                         classifier.plot_confusion_matrix(X_test, y_test, normalize=True)
                     elif plot_choice == '3':
-                        classifier.plot_model_architecture()
-                    elif plot_choice == '4':
-                        classifier.generate_model_summary_latex()
-                    elif plot_choice == '5':
                         classifier.plot_roc_curve(X_test, y_test)
-                    elif plot_choice == '6':
+                    elif plot_choice == '4':
+                        snr_input = input("Enter SNR in dB (optional, press Enter to skip): ").strip()
+                        snr_db = float(snr_input) if snr_input else None
+                        classifier.plot_roc_pfa_pd(X_test, y_test, snr_db=snr_db)
+                    elif plot_choice == '5':
                         classifier.plot_prediction_distribution(X_test, y_test)
-                    elif plot_choice == '7':
-                        print("\\nGenerating all plots...")
+                    elif plot_choice == '6':
+                        print("\nGenerating all classification plots...")
                         classifier.plot_confusion_matrix(X_test, y_test, normalize=False)
                         classifier.plot_confusion_matrix(X_test, y_test, normalize=True)
                         classifier.plot_roc_curve(X_test, y_test)
+                        classifier.plot_roc_pfa_pd(X_test, y_test)
                         classifier.plot_prediction_distribution(X_test, y_test)
-                        classifier.plot_model_architecture()
-                        classifier.generate_model_summary_latex()
                     elif plot_choice == 'b':
                         break
                     else:
                         print("Invalid selection.")
                 
+            except Exception as e:
+                print(f"Error: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        elif choice == '9':
+            # Model analysis submenu
+            try:
+                while True:
+                    print(f"\n{'='*70}")
+                    print("Model Analysis")
+                    print(f"{'='*70}")
+                    
+                    if classifier.model is not None:
+                        print(f"Current model: {classifier.model.name}")
+                        print(f"Input shape: {classifier.model.input_shape}")
+                        print(f"Parameters: {classifier.model.count_params():,}")
+                    else:
+                        print("No model loaded.")
+                    
+                    print("\nOptions:")
+                    print("  [1] Calculate FLOPs (computational cost)")
+                    print("  [2] Model Architecture Diagram (PNG)")
+                    print("  [3] Full LaTeX Report (document)")
+                    print("  [4] TikZ Architecture Diagram")
+                    print("  [5] Layer-by-layer Summary")
+                    print("  [6] Build model (without training)")
+                    print("  [b] Back")
+                    
+                    analysis_choice = input("\nSelect option: ").strip().lower()
+                    
+                    if analysis_choice == '1':
+                        if classifier.model is None:
+                            print("\nNo model loaded. Building default model...")
+                            try:
+                                input_len = int(input("Enter input length [50]: ").strip() or "50")
+                            except ValueError:
+                                input_len = 50
+                            classifier.build_model(input_len)
+                        
+                        flops_result = classifier.calculate_flops()
+                        
+                        # Ask if user wants to save results
+                        save_flops = input("\nSave FLOP analysis to file? (y/n) [n]: ").strip().lower()
+                        if save_flops == 'y':
+                            flops_file = os.path.join(os.path.dirname(hdf5_file), "flops_analysis.txt")
+                            with open(flops_file, 'w') as f:
+                                f.write("="*70 + "\n")
+                                f.write("FLOP Analysis for PiClassifier\n")
+                                f.write("="*70 + "\n\n")
+                                f.write(f"Total FLOPs per inference: {flops_result['total_flops']:,}\n")
+                                f.write(f"Total MFLOPs: {flops_result['mflops']:.3f}\n")
+                                f.write(f"Total GFLOPs: {flops_result['gflops']:.6f}\n\n")
+                                f.write("Layer Breakdown:\n")
+                                f.write("-"*70 + "\n")
+                                for name, info in flops_result['breakdown'].items():
+                                    if info['flops'] > 0:
+                                        f.write(f"{name:<25} {info['type']:<20} {info['flops']:>12,}\n")
+                            print(f"✓ Saved to: {flops_file}")
+                    
+                    elif analysis_choice == '2':
+                        if classifier.model is None:
+                            try:
+                                input_len = int(input("Enter input length [50]: ").strip() or "50")
+                            except ValueError:
+                                input_len = 50
+                        else:
+                            input_len = None
+                        
+                        output_path = os.path.join(os.path.dirname(hdf5_file), "model_architecture.png")
+                        classifier.plot_model_architecture(input_length=input_len, output_path=output_path)
+                    
+                    elif analysis_choice == '3':
+                        if classifier.model is None:
+                            try:
+                                input_len = int(input("Enter input length [50]: ").strip() or "50")
+                            except ValueError:
+                                input_len = 50
+                        else:
+                            input_len = None
+                        
+                        latex_file = os.path.join(os.path.dirname(hdf5_file), "model_report.tex")
+                        classifier.generate_model_summary_latex(input_length=input_len, output_file=latex_file)
+                    
+                    elif analysis_choice == '4':
+                        if classifier.model is None:
+                            try:
+                                input_len = int(input("Enter input length [50]: ").strip() or "50")
+                            except ValueError:
+                                input_len = 50
+                            classifier.build_model(input_len)
+                        
+                        tikz_file = os.path.join(os.path.dirname(hdf5_file), "model_architecture.tex")
+                        classifier.generate_architecture_tikz(output_file=tikz_file)
+                    
+                    elif analysis_choice == '5':
+                        if classifier.model is None:
+                            print("\nNo model loaded. Build or load a model first.")
+                        else:
+                            print(f"\n{'='*70}")
+                            print("Layer-by-Layer Summary")
+                            print(f"{'='*70}")
+                            classifier.model.summary()
+                    
+                    elif analysis_choice == '6':
+                        try:
+                            input_len = int(input("Enter input length [50]: ").strip() or "50")
+                        except ValueError:
+                            input_len = 50
+                        classifier.build_model(input_len)
+                        print("\n✓ Model built successfully!")
+                    
+                    elif analysis_choice == 'b':
+                        break
+                    else:
+                        print("Invalid selection.")
+                        
+            except Exception as e:
+                print(f"Error: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        elif choice == '10':
+            # Save/Load model submenu
+            try:
+                while True:
+                    print(f"\n{'='*70}")
+                    print("Save/Load Model")
+                    print(f"{'='*70}")
+                    
+                    if classifier.model is not None:
+                        print(f"Current model: {classifier.model.name}")
+                        print(f"Parameters: {classifier.model.count_params():,}")
+                    else:
+                        print("No model loaded.")
+                    
+                    print("\nOptions:")
+                    print("  [1] Save current model")
+                    print("  [2] Load model from file")
+                    print("  [3] List available models")
+                    print("  [b] Back")
+                    
+                    model_choice = input("\nSelect option: ").strip().lower()
+                    
+                    if model_choice == '1':
+                        if classifier.model is None:
+                            print("\nNo model to save. Train or build a model first.")
+                            continue
+                        
+                        default_name = f"model_{datetime.now().strftime('%Y%m%d_%H%M%S')}.keras"
+                        model_name = input(f"Model filename [{default_name}]: ").strip() or default_name
+                        
+                        if not model_name.endswith('.keras'):
+                            model_name += '.keras'
+                        
+                        model_path = os.path.join(os.path.dirname(hdf5_file), model_name)
+                        classifier.save_model(model_path)
+                    
+                    elif model_choice == '2':
+                        # Find .keras files
+                        model_dir = os.path.dirname(hdf5_file)
+                        keras_files = [f for f in os.listdir(model_dir) if f.endswith('.keras')]
+                        
+                        if keras_files:
+                            print("\nAvailable models:")
+                            for i, f in enumerate(keras_files):
+                                print(f"  [{i+1}] {f}")
+                            print(f"  [m] Enter path manually")
+                            
+                            selection = input("\nSelect model: ").strip().lower()
+                            
+                            if selection == 'm':
+                                model_path = input("Enter model path: ").strip()
+                            else:
+                                try:
+                                    idx = int(selection) - 1
+                                    if 0 <= idx < len(keras_files):
+                                        model_path = os.path.join(model_dir, keras_files[idx])
+                                    else:
+                                        print("Invalid selection.")
+                                        continue
+                                except ValueError:
+                                    print("Invalid selection.")
+                                    continue
+                        else:
+                            model_path = input("Enter model path: ").strip()
+                        
+                        if os.path.exists(model_path):
+                            classifier.load_model(model_path)
+                            status.set_model(model_path, classifier.model.count_params(), trained=True)
+                        else:
+                            print(f"File not found: {model_path}")
+                    
+                    elif model_choice == '3':
+                        model_dir = os.path.dirname(hdf5_file)
+                        keras_files = [f for f in os.listdir(model_dir) if f.endswith('.keras')]
+                        
+                        if keras_files:
+                            print("\nAvailable models:")
+                            for f in keras_files:
+                                full_path = os.path.join(model_dir, f)
+                                size_mb = os.path.getsize(full_path) / (1024 * 1024)
+                                print(f"  - {f} ({size_mb:.2f} MB)")
+                        else:
+                            print("\nNo .keras files found in dataset directory.")
+                    
+                    elif model_choice == 'b':
+                        break
+                    else:
+                        print("Invalid selection.")
+                        
             except Exception as e:
                 print(f"Error: {e}")
                 import traceback
@@ -613,77 +891,27 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
         else:
             print("Invalid option selected.")
 
-def generate_conductivity_models(simulator, cfg):
-    from discretize import CylindricalMesh
-    
-    models_dir = "Models"
-    os.makedirs(models_dir, exist_ok=True)
-    
-    hr = [(0.01, 15), (0.01, 15, 1.3), (0.05, 10, 1.5)]
-    hphi = 1
-    hz = [(0.01, 10, -1.3), (0.01, 30), (0.01, 10, 1.3)]
-    mesh = CylindricalMesh([hr, hphi, hz], x0="00C")
-    
-    models_file = os.path.join(models_dir, "conductivity_models.h5")
-    
-    print(f"\nGenerating conductivity models...")
-    
-    with h5py.File(models_file, 'w') as f:
-        f.attrs['creation_time'] = datetime.now().isoformat()
-        
-        ind_active = mesh.cell_centers[:, 2] < cfg.separation_z
-        r = mesh.cell_centers[ind_active, 0]
-        z = mesh.cell_centers[ind_active, 2]
-        
-        mesh_group = f.create_group('mesh_info')
-        mesh_group.create_dataset('cell_centers_r', data=r)
-        mesh_group.create_dataset('cell_centers_z', data=z)
-        mesh_group.create_dataset('ind_active', data=ind_active)
-        
-        models_group = f.create_group('models')
-        
-        target_types = [1, 2, 3]
-        
-        for target_type in target_types:
-            model, _ = simulator.create_conductivity_model(
-                mesh, 0.0, target_type, cfg.aluminum_conductivity
-            )
-            model_name = f"type_{target_type}_cond_{cfg.aluminum_conductivity:.0e}"
-            model_group = models_group.create_group(model_name)
-            model_group.create_dataset('model', data=model)
-            model_group.attrs['target_type'] = target_type
-            model_group.attrs['conductivity'] = cfg.aluminum_conductivity
-            model_group.attrs['target_z'] = 0.0
-                
-        base_model, _ = simulator.create_conductivity_model(mesh, 0.0, 0)
-        base_group = models_group.create_group('base_model')
-        base_group.create_dataset('model', data=base_model)
-        base_group.attrs['target_type'] = 0
-        base_group.attrs['conductivity'] = 0.0
-        base_group.attrs['target_z'] = 0.0
-        
-    print(f"Models saved to: {models_file}")
-
-
 if __name__ == "__main__":
     cfg = PiConfig('config.json')
     simulator = PiSimulator(cfg)
     logger = PiLogger()
-    plotter = PiPlotter(cfg)
+    plotter = PiPlotter(cfg, simulator)
     conditioner = PiConditioner(cfg)
     classifier = PiClassifier(conditioner)
+    status = SystemStatus()
 
     num_target_present = 2000
     num_target_absent = 2000
     
     while True:
+        status.display()
+        
         print("\n" + "="*70)
         print("TDEM Simulation System - Main Menu")
         print("="*70)
         print("\nOptions:")
         print("  1. Generate new dataset")
         print("  2. Load existing dataset")
-        print("  3. Update conductivity models")
         print("  [q] Quit")
         
         choice = input("\nSelect option: ").strip().lower()
@@ -730,31 +958,18 @@ if __name__ == "__main__":
             )
             
             # Go to dataset operations menu
-            dataset_operations_menu(hdf5_path, cfg, simulator, logger, plotter, classifier, conditioner)
+            dataset_operations_menu(hdf5_path, cfg, simulator, logger, plotter, classifier, conditioner, status)
         
         elif choice == '2':
             # Load existing dataset
-            hdf5_file = select_hdf5_file()
+            hdf5_file = logger.select_hdf5_file()
             
             if hdf5_file is None:
                 print("Operation cancelled.")
             else:
-                # Go to dataset operations menu
-                dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifier, conditioner)
-        
-        elif choice == '3':
-            # Update conductivity models
-            print("\n" + "="*70)
-            print("Update Conductivity Models")
-            print("="*70)
-            print("\nThis will generate all conductivity model combinations...")
-            confirm = input("Proceed? (y/n): ").strip().lower()
-            if confirm == 'y':
-                generate_conductivity_models(simulator, cfg)
-                print("\n✓ Conductivity models updated!")
+                dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifier, conditioner, status)
         
         elif choice == 'q':
-            # Quit
             print("\nExiting TDEM Simulation System...")
             break
         

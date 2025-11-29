@@ -1,14 +1,3 @@
-"""
-TDEM Simulation Configuration Manager
-======================================
-
-This module provides a configuration class for loading and managing
-TDEM simulation parameters from JSON files.
-
-Author: TDEM Simulation Project
-Date: October 2025
-"""
-
 import json
 import os
 import numpy as np
@@ -16,23 +5,7 @@ from typing import Dict, Any, Optional
 
 
 class PiConfig:
-    """
-    Configuration manager for TDEM simulations.
-    
-    Loads parameters from JSON file and provides default values for all
-    simulation constants including transmitter/receiver locations, target
-    properties, conductivity values, and mesh parameters.
-    """
-    
     def __init__(self, config_path: str = 'config.json'):
-        """
-        Initialize configuration from JSON file.
-        
-        Parameters
-        ----------
-        config_path : str
-            Path to the JSON configuration file
-        """
         self.config_path = config_path
         self._load_config()
         self._set_defaults()
@@ -70,9 +43,9 @@ class PiConfig:
         self.target_z = self._config_data.get('target_z', -0.1)
         self.target_center = np.array([self.target_x, self.target_y, self.target_z])
         
-        self.target_radius = self._config_data.get('target_radius', 0.0325)  # 3.25 cm
-        self.target_height = self._config_data.get('target_height', 0.12)    # 12 cm
-        self.target_thickness = self._config_data.get('target_thickness', 0.002)  # 2 mm wall thickness
+        self.target_radius = self._config_data.get('target_radius', 0.0325)
+        self.target_height = self._config_data.get('target_height', 0.12)
+        self.target_thickness = self._config_data.get('target_thickness', 0.002)
 
         self.loop_z_range = self._config_data.get('loop_z_range', [0.3, 0.6])
         self.target_z_range = self._config_data.get('target_z_range', [0, 0.3])
@@ -95,8 +68,8 @@ class PiConfig:
         time_steps_raw = self._config_data.get('time_steps', [[1e-6, 100], [1e-5, 400]])
         self.time_steps = [tuple(step) for step in time_steps_raw]
         
-        self.mesh_dh = self._config_data.get('mesh_dh', 0.05)  # base cell width
-        self.mesh_dom_width = self._config_data.get('mesh_dom_width', 2.0)  # domain width
+        self.mesh_dh = self._config_data.get('mesh_dh', 0.05)
+        self.mesh_dom_width = self._config_data.get('mesh_dom_width', 2.0)
         
         self.mesh_topo_refinement = self._config_data.get('mesh_topo_refinement', [0, 0, 0, 1])
         self.mesh_rx_refinement = self._config_data.get('mesh_rx_refinement', [2, 4])
@@ -111,33 +84,12 @@ class PiConfig:
         self.simulation_t0 = self._config_data.get('simulation_t0', 0.0)
         
     def _ensure_array(self, value):
-        """
-        Ensure value is a numpy array, handling both single values and lists.
-        
-        Parameters
-        ----------
-        value : float, list, or array
-            Input value
-            
-        Returns
-        -------
-        array
-            Numpy array
-        """
         if isinstance(value, (list, tuple)):
             return np.array(value)
         else:
             return np.array([value])
     
     def get_time_channels(self) -> np.ndarray:
-        """
-        Get array of time channels for observation.
-        
-        Returns
-        -------
-        time_channels : ndarray
-            Array of observation times in seconds
-        """
         return np.arange(
             self.time_channel_start,
             self.time_channel_end,
@@ -145,34 +97,18 @@ class PiConfig:
         )
     
     def get_target_refinement_box(self) -> np.ndarray:
-        """
-        Get the coordinates for the target refinement box.
-        
-        Returns
-        -------
-        box_coords : ndarray
-            Array of shape (2, 3) with min and max coordinates
-        """
         half_size = self.target_refinement_box_size
         box = np.array([
             [self.target_center[0] - half_size, 
              self.target_center[1] - half_size, 
-             self.target_center[2] - half_size - 0.05],  # Extend downward
+             self.target_center[2] - half_size - 0.05],
             [self.target_center[0] + half_size, 
              self.target_center[1] + half_size, 
-             self.target_center[2] + half_size + 0.05]   # Extend upward
+             self.target_center[2] + half_size + 0.05]
         ])
         return box
     
     def get_grass_box(self) -> np.ndarray:
-        """
-        Get the coordinates for the grass layer box.
-        
-        Returns
-        -------
-        box_coords : ndarray
-            Array of shape (2, 3) with min and max coordinates
-        """
         box = np.array([
             [self.grass_x_min, -1.0, self.grass_z_min],
             [self.grass_x_max, 1.0, self.grass_z_max]
@@ -180,14 +116,6 @@ class PiConfig:
         return box
     
     def summary(self) -> str:
-        """
-        Generate a summary string of the configuration.
-        
-        Returns
-        -------
-        summary : str
-            Human-readable configuration summary
-        """
         lines = [
             "=" * 60,
             "TDEM Simulation Configuration Summary",
@@ -240,11 +168,8 @@ class PiConfig:
         return f"TDEMConfig(config_path='{self.config_path}')"
 
 
-# Example usage
 if __name__ == "__main__":
     config = PiConfig('config.json')
-    
     print(config.summary())
-    
     print(f"\nTarget center: {config.target_center}")
     print(f"Time channels shape: {config.get_time_channels().shape}")
