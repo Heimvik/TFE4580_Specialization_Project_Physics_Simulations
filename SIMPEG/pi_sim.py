@@ -695,6 +695,7 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                     print("  [4] TikZ Architecture Diagram")
                     print("  [5] Layer-by-layer Summary")
                     print("  [6] Build model (without training)")
+                    print("  [7] Dimension-Correct Architecture (PNG)")
                     print("  [b] Back")
                     
                     analysis_choice = input("\nSelect option: ").strip().lower()
@@ -779,6 +780,17 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                             input_len = 50
                         classifier.build_model(input_len)
                         print("\n✓ Model built successfully!")
+                    
+                    elif analysis_choice == '7':
+                        if classifier.model is None:
+                            try:
+                                input_len = int(input("Enter input length [1024]: ").strip() or "1024")
+                            except ValueError:
+                                input_len = 1024
+                            classifier.build_model(input_len)
+                        
+                        output_path = os.path.join(os.path.dirname(hdf5_file), "dimension_architecture.png")
+                        plotter.plot_dimension_architecture(classifier.model, output_path=output_path)
                     
                     elif analysis_choice == 'b':
                         break
@@ -952,9 +964,8 @@ if __name__ == "__main__":
                 target_z_range=cfg.target_z_range,
                 num_target_present=num_tp,
                 num_target_absent=num_ta,
-                num_different_targets=3,
-                probability_of_target_in_soil=1,
-                
+                num_different_targets=1,
+                probability_of_target_in_soil=0.5,
             )
             
             # Go to dataset operations menu

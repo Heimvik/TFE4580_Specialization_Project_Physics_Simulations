@@ -377,7 +377,7 @@ class PiClassifier():
         x = layers.Conv1D(filters=16, kernel_size=3, padding='same', activation='relu', name='conv3')(x)
         x = layers.BatchNormalization(name='bn3')(x)
         x = layers.MaxPooling1D(pool_size=4, name='pool3')(x)
-        x = layers.Dropout(0.3, name='drop3')(x)
+        x = layers.Dropout(0.2, name='drop3')(x)
 
         x = layers.Flatten(name='flatten')(x)
 

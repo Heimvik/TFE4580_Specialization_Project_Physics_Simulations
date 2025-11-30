@@ -685,7 +685,6 @@ class ClassifierPlotter(BasePlotter):
             print("Error: No model provided!")
             return None
         
-        # Extract layer information
         layers_info = []
         for layer in model.layers:
             layer_type = layer.__class__.__name__
@@ -704,7 +703,7 @@ class ClassifierPlotter(BasePlotter):
             
             details = ""
             if 'Conv1D' in layer_type:
-                details = f"filters={layer.filters}, kernel={layer.kernel_size[0]}"
+                details = f"filters={layer.filters}, k={layer.kernel_size[0]}"
             elif 'MaxPooling' in layer_type:
                 details = f"pool={layer.pool_size[0]}"
             elif 'Dense' in layer_type:
@@ -712,7 +711,7 @@ class ClassifierPlotter(BasePlotter):
             elif 'Dropout' in layer_type:
                 details = f"rate={layer.rate}"
             elif 'BatchNorm' in layer_type:
-                details = "momentum=0.99"
+                details = ""
             elif 'InputLayer' in layer_type:
                 config = layer.get_config()
                 if 'batch_input_shape' in config:
@@ -729,115 +728,389 @@ class ClassifierPlotter(BasePlotter):
             })
         
         layer_colors = {
-            'InputLayer': '#E8F5E9',
-            'Conv1D': '#BBDEFB',
-            'BatchNormalization': '#F3E5F5',
-            'Activation': '#FFF3E0',
-            'MaxPooling1D': '#FFECB3',
-            'GlobalAveragePooling1D': '#FFE0B2',
-            'Dropout': '#FFCDD2',
-            'Dense': '#B2DFDB',
-            'Flatten': '#D7CCC8',
+            'InputLayer': '#E3F2FD',
+            'Conv1D': '#90CAF9',
+            'BatchNormalization': '#CE93D8',
+            'MaxPooling1D': '#FFB74D',
+            'Dropout': '#EF9A9A',
+            'Dense': '#80CBC4',
+            'Flatten': '#BCAAA4',
+        }
+        
+        block_layers = {
+            1: ['conv1', 'bn1', 'pool1', 'drop1'],
+            2: ['conv2', 'bn2', 'pool2', 'drop2'],
+            3: ['conv3', 'bn3', 'pool3', 'drop3']
         }
         
         n_layers = len(layers_info)
-        fig_height = max(12, n_layers * 0.8)
-        fig, ax = plt.subplots(1, 1, figsize=(14, fig_height))
+        box_width = 8
+        box_height = 0.55
+        y_spacing = 1.0
+        block_spacing = 0.6
+        x_center = 6
         
-        box_width = 10
-        box_height = 0.6
-        y_spacing = 0.85
-        x_center = 7
+        total_height = 0
+        current_block = None
+        for i, layer in enumerate(layers_info):
+            layer_name = layer['name']
+            new_block = None
+            for block_num, block_layer_names in block_layers.items():
+                if layer_name in block_layer_names:
+                    new_block = block_num
+                    break
+            
+            if new_block and new_block != current_block:
+                total_height += block_spacing
+                current_block = new_block
+            elif current_block and new_block is None:
+                total_height += block_spacing
+                current_block = None
+            
+            total_height += y_spacing
         
-        ax.text(x_center, n_layers * y_spacing + 1.5, 
-                'TDEM Pulse Induction Classifier Architecture',
-                fontsize=18, fontweight='bold', ha='center', va='center',
-                fontfamily='serif')
+        fig_height = max(10, total_height * 0.6 + 1)
+        fig, ax = plt.subplots(1, 1, figsize=(10, fig_height))
         
-        ax.text(x_center, n_layers * y_spacing + 0.9,
-                f'Total Parameters: {model.count_params():,}',
-                fontsize=12, ha='center', va='center', style='italic',
-                color='#666666')
+        y_positions = {}
+        y_pos = total_height
+        current_block = None
+        block_y_ranges = {}
         
         for i, layer in enumerate(layers_info):
-            y_pos = (n_layers - 1 - i) * y_spacing + 0.5
+            layer_name = layer['name']
+            new_block = None
+            for block_num, block_layer_names in block_layers.items():
+                if layer_name in block_layer_names:
+                    new_block = block_num
+                    break
+            
+            if new_block and new_block != current_block:
+                if current_block is not None:
+                    y_pos -= block_spacing
+                current_block = new_block
+                block_y_ranges[current_block] = {'start': y_pos, 'end': None}
+            elif current_block and new_block is None:
+                block_y_ranges[current_block]['end'] = y_pos + y_spacing - box_height/2+0.1
+                y_pos -= block_spacing
+                current_block = None
+            
+            y_positions[i] = y_pos
+            
+            if current_block and new_block:
+                block_y_ranges[current_block]['end'] = y_pos - box_height/2 - 0.15
+            
+            y_pos -= y_spacing
+        
+        for block_num, y_range in block_y_ranges.items():
+            if y_range['start'] is not None and y_range['end'] is not None:
+                block_top = y_range['start'] + box_height/2 + 0.15
+                block_bottom = y_range['end'] - box_height/2 - 0.35
+                block_height = block_top - block_bottom
+                block_left = x_center - box_width/2 - 0.5
+                block_right = x_center + box_width/2 + 0.5
+                block_width_rect = block_right - block_left
+                
+                block_rect = FancyBboxPatch(
+                    (block_left, block_bottom),
+                    block_width_rect, block_height,
+                    boxstyle="round,pad=0.02,rounding_size=0.15",
+                    facecolor='#f8f9fa',
+                    edgecolor='#495057',
+                    linewidth=1.5,
+                    linestyle='-',
+                    zorder=0
+                )
+                ax.add_patch(block_rect)
+                
+                ax.text(block_left + 0.15, block_bottom + 0.15,
+                       f'Block {block_num}',
+                       fontsize=9, fontweight='bold', ha='left', va='bottom',
+                       color='#495057', fontfamily='sans-serif')
+        for i, layer in enumerate(layers_info):
+            y_pos = y_positions[i]
             
             color = layer_colors.get(layer['type'], '#E0E0E0')
             
             box = FancyBboxPatch(
                 (x_center - box_width/2, y_pos - box_height/2),
                 box_width, box_height,
-                boxstyle="round,pad=0.03,rounding_size=0.1",
+                boxstyle="round,pad=0.02,rounding_size=0.08",
                 facecolor=color,
-                edgecolor='#333333',
-                linewidth=1.5,
-                mutation_scale=0.5
+                edgecolor='#37474F',
+                linewidth=1.2,
+                zorder=2
             )
             ax.add_patch(box)
             
-            ax.text(x_center - box_width/2 + 0.3, y_pos + 0.08,
-                   layer['type'],
-                   fontsize=11, fontweight='bold', ha='left', va='center',
-                   fontfamily='monospace')
-            
-            name_details = layer['name']
+            display_type = layer['type']
             if layer['details']:
-                name_details += f"  ({layer['details']})"
-            ax.text(x_center - box_width/2 + 0.3, y_pos - 0.15,
-                   name_details,
-                   fontsize=9, ha='left', va='center', color='#555555')
+                display_type += f"  ({layer['details']})"
             
-            ax.text(x_center + box_width/2 - 0.3, y_pos + 0.08,
-                   f"Output: {layer['shape']}",
-                   fontsize=9, ha='right', va='center',
-                   fontfamily='monospace', color='#333333')
-            
-            if layer['params'] > 0:
-                ax.text(x_center + box_width/2 - 0.3, y_pos - 0.15,
-                       f"Params: {layer['params']:,}",
-                       fontsize=9, ha='right', va='center', color='#666666')
+            ax.text(x_center, y_pos + 0.05,
+                   display_type,
+                   fontsize=9, fontweight='bold', ha='center', va='center',
+                   fontfamily='sans-serif', color='#1a1a2e', zorder=3)
             
             if i < n_layers - 1:
+                next_y = y_positions[i + 1]
                 arrow = FancyArrowPatch(
-                    (x_center, y_pos - box_height/2 - 0.02),
-                    (x_center, y_pos - y_spacing + box_height/2 + 0.02),
-                    arrowstyle=ArrowStyle('->', head_length=6, head_width=4),
-                    color='#666666',
-                    linewidth=1.5,
-                    mutation_scale=1
+                    (x_center, y_pos - box_height/2 - 0.03),
+                    (x_center, next_y + box_height/2 + 0.03),
+                    arrowstyle=ArrowStyle('->', head_length=5, head_width=3),
+                    color='#546E7A',
+                    linewidth=1.2,
+                    zorder=1
                 )
                 ax.add_patch(arrow)
         
-        legend_elements = []
-        used_types = set(layer['type'] for layer in layers_info)
-        for layer_type in ['InputLayer', 'Conv1D', 'BatchNormalization', 'Activation', 
-                          'MaxPooling1D', 'GlobalAveragePooling1D', 'Dropout', 'Dense']:
-            if layer_type in used_types:
-                color = layer_colors.get(layer_type, '#E0E0E0')
-                legend_elements.append(mpatches.Patch(facecolor=color, edgecolor='#333333',
-                                                      label=layer_type, linewidth=1))
-        
-        ax.legend(handles=legend_elements, loc='upper left', 
-                 bbox_to_anchor=(0.02, 0.98), fontsize=9,
-                 title='Layer Types', title_fontsize=10)
-        
-        ax.set_xlim(0, 14)
-        ax.set_ylim(-0.5, n_layers * y_spacing + 2)
+        min_y = min(y_positions.values()) - box_height/2 - 0.3
+        max_y = max(y_positions.values()) + box_height/2 + 0.3
+        ax.set_xlim(x_center - box_width/2 - 1.0, x_center + box_width/2 + 1.0)
+        ax.set_ylim(min_y, max_y)
         ax.axis('off')
-        ax.set_aspect('equal')
         
         plt.tight_layout()
         
-        plt.savefig(output_path, dpi=150, bbox_inches='tight', 
+        plt.savefig(output_path, dpi=200, bbox_inches='tight', 
                    facecolor='white', edgecolor='none')
         print(f"\n✓ Model architecture saved to: {output_path}")
         
         plt.show()
         
+        return output_path
+
+    def plot_dimension_architecture(self, model, output_path='dimension_architecture.png'):
         print("\n" + "="*70)
-        print("Detailed Architecture Summary:")
+        print("Dimension-Correct Architecture Visualization")
         print("="*70)
-        model.summary()
+        
+        if model is None:
+            print("Error: No model provided!")
+            return None
+        
+        layers_info = []
+        for layer in model.layers:
+            layer_type = layer.__class__.__name__
+            
+            try:
+                output_shape = list(layer.output.shape)
+            except:
+                try:
+                    output_shape = list(layer.output_shape)
+                except:
+                    output_shape = [None]
+            
+            params = layer.count_params()
+            
+            details = ""
+            if 'Conv1D' in layer_type:
+                details = f"k={layer.kernel_size[0]}"
+            elif 'MaxPooling' in layer_type:
+                details = f"p={layer.pool_size[0]}"
+            elif 'Dense' in layer_type:
+                details = f"units={layer.units}"
+            elif 'Dropout' in layer_type:
+                details = f"r={layer.rate}"
+            
+            layers_info.append({
+                'name': layer.name,
+                'type': layer_type,
+                'shape': output_shape,
+                'params': params,
+                'details': details
+            })
+        
+        layer_colors = {
+            'InputLayer': '#E3F2FD',
+            'Conv1D': '#90CAF9',
+            'BatchNormalization': '#CE93D8',
+            'MaxPooling1D': '#FFB74D',
+            'Dropout': '#EF9A9A',
+            'Dense': '#80CBC4',
+            'Flatten': '#BCAAA4',
+        }
+        
+        block_layers = {
+            1: ['conv1', 'bn1', 'pool1', 'drop1'],
+            2: ['conv2', 'bn2', 'pool2', 'drop2'],
+            3: ['conv3', 'bn3', 'pool3', 'drop3']
+        }
+        
+        n_layers = len(layers_info)
+        base_width = 2.0
+        box_height = 0.6
+        y_spacing = 1.1
+        block_spacing = 0.7
+        x_center = 8
+        
+        def get_width_for_shape(shape):
+            if len(shape) >= 2 and shape[1] is not None:
+                seq_len = shape[1]
+                width = base_width + np.log10(max(seq_len, 1)) * 1.5
+                return min(width, 10)
+            elif len(shape) >= 1 and shape[-1] is not None:
+                return base_width + np.log10(max(shape[-1], 1)) * 0.8
+            return base_width
+        
+        def format_shape(shape):
+            parts = []
+            for dim in shape:
+                if dim is None:
+                    parts.append("N")
+                elif dim > 999:
+                    parts.append(f"{dim}")
+                else:
+                    parts.append(str(dim))
+            return " × ".join(parts)
+        
+        total_height = 0
+        current_block = None
+        for i, layer in enumerate(layers_info):
+            layer_name = layer['name']
+            new_block = None
+            for block_num, block_layer_names in block_layers.items():
+                if layer_name in block_layer_names:
+                    new_block = block_num
+                    break
+            
+            if new_block and new_block != current_block:
+                total_height += block_spacing
+                current_block = new_block
+            elif current_block and new_block is None:
+                total_height += block_spacing
+                current_block = None
+            
+            total_height += y_spacing
+        
+        fig_height = max(10, total_height * 0.55 + 1)
+        fig, ax = plt.subplots(1, 1, figsize=(12, fig_height))
+        
+        y_positions = {}
+        layer_widths = {}
+        y_pos = total_height
+        current_block = None
+        block_y_ranges = {}
+        
+        for i, layer in enumerate(layers_info):
+            layer_name = layer['name']
+            new_block = None
+            for block_num, block_layer_names in block_layers.items():
+                if layer_name in block_layer_names:
+                    new_block = block_num
+                    break
+            
+            if new_block and new_block != current_block:
+                if current_block is not None:
+                    y_pos -= block_spacing
+                current_block = new_block
+                block_y_ranges[current_block] = {'start': y_pos, 'end': None}
+            elif current_block and new_block is None:
+                block_y_ranges[current_block]['end'] = y_pos + y_spacing - box_height/2
+                y_pos -= block_spacing
+                current_block = None
+            
+            y_positions[i] = y_pos
+            layer_widths[i] = get_width_for_shape(layer['shape'])
+            
+            if current_block and new_block:
+                block_y_ranges[current_block]['end'] = y_pos - box_height/2 - 0.15
+            
+            y_pos -= y_spacing
+        
+        max_width = max(layer_widths.values()) if layer_widths else base_width
+        
+        for block_num, y_range in block_y_ranges.items():
+            if y_range['start'] is not None and y_range['end'] is not None:
+                block_top = y_range['start'] + box_height/2 + 0.15
+                block_bottom = y_range['end'] - box_height/2 - 0.35
+                block_height = block_top - block_bottom
+                block_left = x_center - max_width/2 - 0.6
+                block_right = x_center + max_width/2 + 0.6
+                block_width_rect = block_right - block_left
+                
+                block_rect = FancyBboxPatch(
+                    (block_left, block_bottom),
+                    block_width_rect, block_height,
+                    boxstyle="round,pad=0.02,rounding_size=0.15",
+                    facecolor='#f8f9fa',
+                    edgecolor='#495057',
+                    linewidth=1.5,
+                    linestyle='-',
+                    zorder=0
+                )
+                ax.add_patch(block_rect)
+                
+                ax.text(block_left + 0.15, block_bottom + 0.15,
+                       f'Block {block_num}',
+                       fontsize=9, fontweight='bold', ha='left', va='bottom',
+                       color='#495057', fontfamily='sans-serif')
+        
+        for i, layer in enumerate(layers_info):
+            y_pos = y_positions[i]
+            width = layer_widths[i]
+            
+            color = layer_colors.get(layer['type'], '#E0E0E0')
+            
+            box = FancyBboxPatch(
+                (x_center - width/2, y_pos - box_height/2),
+                width, box_height,
+                boxstyle="round,pad=0.02,rounding_size=0.08",
+                facecolor=color,
+                edgecolor='#37474F',
+                linewidth=1.2,
+                zorder=2
+            )
+            ax.add_patch(box)
+            
+            short_type = layer['type'].replace('Normalization', 'Norm').replace('Pooling1D', 'Pool')
+            if layer['details']:
+                display_text = f"{short_type} ({layer['details']})"
+            else:
+                display_text = short_type
+            
+            ax.text(x_center, y_pos + 0.08,
+                   display_text,
+                   fontsize=8, fontweight='bold', ha='center', va='center',
+                   fontfamily='sans-serif', color='#1a1a2e', zorder=3)
+            
+            shape_str = format_shape(layer['shape'])
+            ax.text(x_center, y_pos - 0.12,
+                   f"[{shape_str}]",
+                   fontsize=7, ha='center', va='center',
+                   fontfamily='monospace', color='#37474F', zorder=3)
+            
+            if layer['params'] > 0:
+                ax.text(x_center + width/2 + 0.3, y_pos,
+                       f"{layer['params']:,}",
+                       fontsize=7, ha='left', va='center',
+                       color='#666666', fontfamily='sans-serif', zorder=3)
+            
+            if i < n_layers - 1:
+                next_y = y_positions[i + 1]
+                arrow = FancyArrowPatch(
+                    (x_center, y_pos - box_height/2 - 0.03),
+                    (x_center, next_y + box_height/2 + 0.03),
+                    arrowstyle=ArrowStyle('->', head_length=5, head_width=3),
+                    color='#546E7A',
+                    linewidth=1.2,
+                    zorder=1
+                )
+                ax.add_patch(arrow)
+        
+        min_y = min(y_positions.values()) - box_height/2 - 0.3
+        max_y = max(y_positions.values()) + box_height/2 + 0.3
+        ax.set_xlim(x_center - max_width/2 - 1.2, x_center + max_width/2 + 1.5)
+        ax.set_ylim(min_y, max_y)
+        ax.axis('off')
+        
+        plt.tight_layout()
+        
+        plt.savefig(output_path, dpi=200, bbox_inches='tight', 
+                   facecolor='white', edgecolor='none')
+        print(f"\n✓ Dimension architecture saved to: {output_path}")
+        
+        plt.show()
         
         return output_path
     
