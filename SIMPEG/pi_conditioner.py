@@ -4,9 +4,31 @@ import numpy as np
 class PiConditioner:
     def __init__(self, cfg):
         self.cfg = cfg
+        
+    def add_noise(self, time, data, late_time, snr_db):
+        if isinstance(time, list):
+            time = time[0]
+        
+        if hasattr(time, 'ndim') and time.ndim > 1:
+            time = time[0]
+        
+        print(f"Time range: {time[0]:.6e} to {time[-1]:.6e}")
+        
+        if late_time < time[0]:
+            raise ValueError("late_time must be within the range of time array")
+        if late_time > time[-1]:
+            raise ValueError("late_time must be within the range of time array")
 
-    def add_noise(self, data, snr_db):
-        noise_std = np.sqrt(np.mean(data**2) / 10**(snr_db / 10))
+        idx = np.where(time >= late_time)[0]
+        if len(idx) == 0:
+            raise ValueError("late_time is beyond the maximum time in the array")
+        idx = idx[0]
+
+        signal_power = np.mean(data[idx:]**2)
+        snr_linear = 10**(snr_db / 10)
+        noise_power = signal_power / snr_linear
+        noise_std = np.sqrt(noise_power)
+
         noise = np.random.normal(0, noise_std, size=data.shape)
         return data + noise
         
@@ -34,15 +56,13 @@ class PiConditioner:
         return data_normalized
 
     def quantize(self, data, depth, dtype):
-        data_normalized = (data - data.min()) / (data.max() - data.min() + 1e-10)
-        data_clean = np.nan_to_num(data_normalized, nan=0.0, posinf=0.0, neginf=0.0)
-        return (np.round(data_clean * (2**depth - 1))).astype(dtype)
+        return (np.round(data * 2**depth)).astype(dtype)
     
-    def condition_dataset(self, I_0):
+    def condition_dataset(self, I_0, time):
         
-        v_0 = np.clip(I_0, 1e-10, 30)
-        v_1 = np.log10(v_0)
-        v_2 = np.clip(v_1, 1 + (1 / 2**12) * (3.3 - 1), 3.3)
-        I_1 = self.quantize(v_2, depth=12, dtype=np.uint16)        
+        v_0 = np.clip(I_0, 0, 0.7)
+        v_1 = self.amplify(time, v_0, [[100e-6,10],[300e-6,65]])
+        v_2 = np.clip(v_1, 0, 3.3)
+        v_3 = self.quantize(v_2, depth=12, dtype=np.uint16)       
 
-        return I_1
+        return v_3

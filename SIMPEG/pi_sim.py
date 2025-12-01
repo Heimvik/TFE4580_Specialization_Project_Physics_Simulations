@@ -226,11 +226,10 @@ class PiSimulator:
         
         if target_z_range is not None:
             target_z_val = np.random.uniform(target_z_range[0], target_z_range[1])
+            print(f"Generated target_z={target_z_val:.4f} within range {target_z_range}")
             while target_z_val > self.cfg.separation_z:
                 print(f"Warning: Generated target_z={target_z_val:.4f} > separation_z={-self.cfg.separation_z}. Regenerating...")
                 target_z_val = np.random.uniform(target_z_range[0], target_z_range[1])
-        else:
-            target_z_val = None
 
         survey = self.create_survey(time_channels, waveform, loop_z_val)
 
@@ -243,11 +242,7 @@ class PiSimulator:
         else:
             create_plotting_metadata = False
 
-        if (target_over_soil or target_under_soil) and target_z_range is not None:
-            model, model_map = self.create_conductivity_model(mesh, target_z_val, target_type, self.cfg.aluminum_conductivity)
-        else:
-            print("If a target is present, target_z_range must be provided.")
-            return None, None, None, None, None, None
+        model, model_map = self.create_conductivity_model(mesh, target_z_val, target_type, self.cfg.aluminum_conductivity)
 
         simulation = tdem.simulation.Simulation3DMagneticFluxDensity(
             mesh,
@@ -411,9 +406,10 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
         print("  5. Train classifier")
         print("  6. Validate classifier")
         print("  7. Test classifier")
-        print("  8. Classification plots")
-        print("  9. Model analysis (FLOPs, parameters, architecture)")
-        print("  10. Save/Load model")
+        print("  8. Quantize model")
+        print("  9. Classification plots")
+        print("  10. Model analysis (FLOPs, parameters, architecture)")
+        print("  11. Save/Load model")
         print("  [b] Back to main menu")
         
         choice = input("\nSelect option: ").strip().lower()
@@ -475,9 +471,9 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                 time, decay_curves, labels, label_strings, metadata = logger.load_from_hdf5(hdf5_file)
                 
                 print("Applying conditioning (log-scale + min-max normalization)...")
-                I_0 = (np.pi * cfg.tx_radius**2 * cfg.tx_n_turns) * decay_curves
                 I_1 = conditioner.condition_dataset(
-                    I_0
+                    decay_curves,
+                    time
                 )
                 
                 # Save conditioned dataset
@@ -610,12 +606,55 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                 print(f"Error: {e}")
                 import traceback
                 traceback.print_exc()
-        
+
         elif choice == '8':
-            # Classification plots submenu
+            # Quantize model
             try:
                 if classifier.model is None:
-                    print("\nNo model loaded. Train a model first (option 5) or load one (option 10).")
+                    print("\nNo model loaded. Train a model first (option 5) or load one (option 11).")
+                    continue
+                
+                print(f"\n{'='*70}")
+                print("QUANTIZE MODEL")
+                print(f"{'='*70}")
+                
+                # Check if test data is available for representative dataset
+                test_path = logger.get_split_path(hdf5_file, 'test')
+                representative_data = None
+                if test_path:
+                    use_test = input("Use test data as representative dataset for quantization? (y/n) [y]: ").strip().lower() or 'y'
+                    if use_test == 'y':
+                        print("Loading test data for representative dataset...")
+                        _, decay_curves, _, _, _ = logger.load_from_hdf5(test_path)
+                        representative_data = decay_curves.reshape(decay_curves.shape[0], decay_curves.shape[1], 1)
+                        print(f"Using {len(representative_data)} samples from test set")
+                
+                # Ask for output path
+                default_name = f"quantized_model_{datetime.now().strftime('%Y%m%d_%H%M%S')}.tflite"
+                output_name = input(f"Quantized model filename [{default_name}]: ").strip() or default_name
+                if not output_name.endswith('.tflite'):
+                    output_name += '.tflite'
+                output_path = os.path.join(os.path.dirname(hdf5_file), output_name)
+                
+                # Quantize the model
+                quantized_model = classifier.quantize_model(representative_data=representative_data, output_path=output_path)
+                
+                if quantized_model is not None:
+                    print(f"\n✓ Model quantized successfully!")
+                    print(f"  Saved as: {output_name}")
+                else:
+                    print("\n✗ Quantization failed.")
+                
+            except Exception as e:
+                print(f"Error: {e}")
+                import traceback
+                traceback.print_exc()
+
+        elif choice == '9':
+            # Classification plots
+            try:
+                if classifier.model is None:
+                    print("\nNo model loaded. Train a model first (option 5) or load one (option 11).")
                     continue
                 
                 test_path = logger.get_split_path(hdf5_file, 'test')
@@ -673,7 +712,7 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                 import traceback
                 traceback.print_exc()
         
-        elif choice == '9':
+        elif choice == '10':
             # Model analysis submenu
             try:
                 while True:
@@ -802,7 +841,7 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                 import traceback
                 traceback.print_exc()
         
-        elif choice == '10':
+        elif choice == '11':
             # Save/Load model submenu
             try:
                 while True:

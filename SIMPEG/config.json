@@ -23,7 +23,7 @@
     "target_height": 0.12,
     "target_thickness": 0.005,
 
-    "loop_z_range": [0.3, 0.4],
+    "loop_z_range": [0.3, 0.3],
     "target_z_range": [0, 0.3],
 
     "air_conductivity": 1e-8,

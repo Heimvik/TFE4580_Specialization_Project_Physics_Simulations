@@ -1,3 +1,4 @@
+import tensorflow as tf
 from tensorflow import keras 
 from tensorflow.keras import layers
 import numpy as np
@@ -408,7 +409,7 @@ class PiClassifier():
         
         optimizer = keras.optimizers.Adam(learning_rate=0.0001)
         self.model.compile(optimizer=optimizer,
-                           loss='sparse_categorical_crossentropy',
+                           loss='binary_crossentropy',
                            metrics=['accuracy'])
         
         history = self.model.fit(
@@ -445,6 +446,59 @@ class PiClassifier():
         
         print(f"\nLoss: {test_loss:.4f}, Accuracy: {test_accuracy:.4f}")
         return test_loss, test_accuracy
+    
+    def quantize_model(self, representative_data=None, output_path=None):
+        if self.model is None:
+            print("Error: No model to quantize. Build or load a model first.")
+            return None
+        
+        print("\n" + "="*70)
+        print("Quantizing Model to INT8 (Byte Precision)")
+        print("="*70)
+        
+        converter = tf.lite.TFLiteConverter.from_keras_model(self.model)
+        
+        converter.optimizations = [tf.lite.Optimize.DEFAULT]
+        
+        converter.target_spec.supported_types = [tf.int8]
+        
+        if representative_data is not None:
+            def representative_dataset():
+                for i in range(min(100, len(representative_data))):
+                    sample = representative_data[i:i+1].astype(np.float32)
+                    yield [sample]
+            
+            converter.representative_dataset = representative_dataset
+            converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]
+            converter.inference_input_type = tf.int8
+            converter.inference_output_type = tf.int8
+            print("Using full integer quantization with representative dataset")
+        else:
+            print("Using dynamic range quantization (weights only)")
+        
+        try:
+            self.quantized_model = converter.convert()
+            
+            original_size = sum(w.numpy().nbytes for w in self.model.weights)
+            quantized_size = len(self.quantized_model)
+            compression_ratio = original_size / quantized_size
+            
+            print(f"\nQuantization Results:")
+            print(f"  Original model size: {original_size / 1024:.2f} KB")
+            print(f"  Quantized model size: {quantized_size / 1024:.2f} KB")
+            print(f"  Compression ratio: {compression_ratio:.2f}x")
+            
+            if output_path:
+                with open(output_path, 'wb') as f:
+                    f.write(self.quantized_model)
+                print(f"  Saved to: {output_path}")
+            
+            print("="*70)
+            return self.quantized_model
+            
+        except Exception as e:
+            print(f"Quantization failed: {e}")
+            return None
     
     def visualize_training_data(self, time, decay_curves, labels, label_strings, metadata):
         self.plotter.visualize_training_data(time, decay_curves, labels, label_strings, metadata)

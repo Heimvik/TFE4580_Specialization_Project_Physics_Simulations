@@ -135,11 +135,11 @@ class PiPlotter(BasePlotter):
                 
                 time_us = time * 1e6
                 label_prefix = "[T]" if target_present else "[N]"
-                plt.loglog(time_us, np.abs(decay), color=colors[i], 
+                plt.plot(time_us, np.abs(decay), color=colors[i], 
                           linewidth=2, label=f"{label_prefix} {label}")
         
         plt.xlabel('Time [μs]', fontsize=18)
-        plt.ylabel(r'$\\left|\\frac{\\partial B_z}{\\partial t}\\right|$ [T/s]', fontsize=18)
+        plt.ylabel(r'$\\left\\frac{\\partial B_{z}}{\\partial t}\\right$ [T/s]', fontsize=18)
         plt.tick_params(labelsize=18)
         plt.legend(fontsize=12, bbox_to_anchor=(1.05, 1), loc='upper left')
         plt.grid(True, alpha=0.3, which='both')
@@ -239,7 +239,7 @@ class PiPlotter(BasePlotter):
                    label=f"{meta['label']}", marker='.')
         
         ax_decay.set_xlabel('Time [μs]', fontsize=18)
-        ax_decay.set_ylabel(r'$\left|\frac{\partial B_z}{\partial t}\right|$ [T/s]', fontsize=18)
+        ax_decay.set_ylabel(r'$\left|\frac{\partial B_{z}}{\partial t}\right|$ [T/s]', fontsize=18)
         ax_decay.tick_params(labelsize=18)
         
         ax_decay.grid(True, alpha=0.3, which='both')
