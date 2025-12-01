@@ -217,7 +217,7 @@ class PiSimulator:
         target_under_soil = target_z_range is not None and target_z_range[0] < 0
 
         waveform = tdem.sources.StepOffWaveform(off_time=self.cfg.waveform_off_time)
-        time_channels = np.linspace(0, 1100e-6, 1100)
+        time_channels = np.linspace(0, 1024e-6, 1024)
 
         loop_z_val = np.random.uniform(loop_z_range[0], loop_z_range[1])
         while loop_z_val < self.cfg.separation_z:
@@ -226,24 +226,24 @@ class PiSimulator:
         
         if target_z_range is not None:
             target_z_val = np.random.uniform(target_z_range[0], target_z_range[1])
-            print(f"Generated target_z={target_z_val:.4f} within range {target_z_range}")
             while target_z_val > self.cfg.separation_z:
                 print(f"Warning: Generated target_z={target_z_val:.4f} > separation_z={-self.cfg.separation_z}. Regenerating...")
                 target_z_val = np.random.uniform(target_z_range[0], target_z_range[1])
-
+        else:   
+            target_z_val = None
         survey = self.create_survey(time_channels, waveform, loop_z_val)
 
         if mesh is None:
             hr = [(0.01, 15), (0.01, 15, 1.3), (0.05, 10, 1.5)]
             hphi = 1
             hz = [(0.01, 10, -1.3), (0.01, 30), (0.01, 10, 1.3)]
-            mesh = CylindricalMesh([hr, hphi, hz], origin=[0, 0, target_z_val])
+            mesh = CylindricalMesh([hr, hphi, hz], x0="00C")
             create_plotting_metadata = True
         else:
             create_plotting_metadata = False
 
         model, model_map = self.create_conductivity_model(mesh, target_z_val, target_type, self.cfg.aluminum_conductivity)
-
+        
         simulation = tdem.simulation.Simulation3DMagneticFluxDensity(
             mesh,
             survey=survey,
