@@ -59,17 +59,16 @@ class PiConditioner:
         return (np.round(data * 2**depth)).astype(dtype)
     
     def condition_dataset(self, I_0, time):
-        time = time[1:]
+        time = time[-1024:]
         if I_0.ndim > 1:
-            I_0 = I_0[:, 1:]
+            I_0 = I_0[:, -1024:]
         else:
-            I_0 = I_0[1:]
+            I_0 = I_0[-1024:]
         v_0 = np.clip(I_0,  1e-10, 0.7)
-        v_1 = np.log10(v_0/1e-5)
-        #v_1 = self.amplify(time, v_0, [[0,10], [256e-6,50],[500e-6,100]])
+        v_1 = 0.2*np.log10(v_0/1e-6)
         v_2 = np.clip(v_1, 0, 3.3)
         v_3 = self.quantize(v_2, depth=8, dtype=np.uint16)       
-
+        '''
         # Plot conditioning stages for the first sample in a 3x2 matrix
         if I_0.ndim > 1:
             sample_idx = 0
@@ -143,5 +142,6 @@ class PiConditioner:
         ax5.grid(True, alpha=0.3)
         fig5.savefig('Images/Plots/V_3.png', bbox_inches='tight', pad_inches=0.5)
         plt.close(fig5)
+        '''
 
-        return v_3
+        return v_3, time

@@ -66,22 +66,31 @@ class PiPlotter(BasePlotter):
     def _load_metadata(self):
         with h5py.File(self.hdf5_file, 'r') as f:
             self.simulations_metadata = []
+            self.skipped_indices = []
             for i in range(self.num_sims):
-                sim_group = f[f'simulations/simulation_{i}']
-                metadata = {
-                    'index': i,
-                    'loop_z': sim_group.attrs['loop_z'],
-                    'target_type': sim_group.attrs.get('target_type', -1),
-                    'target_z': sim_group.attrs.get('target_z', None),
-                    'target_conductivity': sim_group.attrs.get('target_conductivity', self.cfg.aluminum_conductivity),
-                    'target_present': sim_group.attrs['target_present'],
-                    'label': sim_group.attrs['label'],
-                    'time': sim_group['time'][:],
-                    'decay': sim_group['decay'][:]
-                }
-                if metadata['target_z'] == -999.0:
-                    metadata['target_z'] = None
-                self.simulations_metadata.append(metadata)
+                try:
+                    sim_group = f[f'simulations/simulation_{i}']
+                    metadata = {
+                        'index': i,
+                        'loop_z': sim_group.attrs['loop_z'],
+                        'target_type': sim_group.attrs.get('target_type', -1),
+                        'target_z': sim_group.attrs.get('target_z', None),
+                        'target_conductivity': sim_group.attrs.get('target_conductivity', self.cfg.aluminum_conductivity),
+                        'target_present': sim_group.attrs['target_present'],
+                        'label': sim_group.attrs['label'],
+                        'time': sim_group['time'][:],
+                        'decay': sim_group['decay'][:]
+                    }
+                    if metadata['target_z'] == -999.0:
+                        metadata['target_z'] = None
+                    self.simulations_metadata.append(metadata)
+                except (OSError, KeyError) as e:
+                    self.skipped_indices.append(i)
+                    print(f"Warning: Skipping missing/corrupted simulation_{i}: {e}")
+                    continue
+            
+            if self.skipped_indices:
+                print(f"\nWarning: Skipped {len(self.skipped_indices)} corrupted simulations: {self.skipped_indices}")
     
     def run(self):
         if self.hdf5_file is None:
@@ -172,13 +181,13 @@ class PiPlotter(BasePlotter):
         
         selected_indices = []
         if user_input.lower() == 'all':
-            selected_indices = list(range(self.num_sims))
+            selected_indices = list(range(len(self.simulations_metadata)))
         else:
             try:
                 parts = [p.strip() for p in user_input.split(',')]
                 for part in parts:
                     idx = int(part) - 1
-                    if 0 <= idx < self.num_sims:
+                    if 0 <= idx < len(self.simulations_metadata):
                         selected_indices.append(idx)
                     else:
                         print(f"Warning: Index {part} out of range, skipping.")
@@ -750,24 +759,8 @@ class ClassifierPlotter(BasePlotter):
         block_spacing = 0.6
         x_center = 6
         
-        total_height = 0
-        current_block = None
-        for i, layer in enumerate(layers_info):
-            layer_name = layer['name']
-            new_block = None
-            for block_num, block_layer_names in block_layers.items():
-                if layer_name in block_layer_names:
-                    new_block = block_num
-                    break
-            
-            if new_block and new_block != current_block:
-                total_height += block_spacing
-                current_block = new_block
-            elif current_block and new_block is None:
-                total_height += block_spacing
-                current_block = None
-            
-            total_height += y_spacing
+        # For equal spacing between all layers, total height is just layers * spacing
+        total_height = n_layers * y_spacing
         
         fig_height = max(10, total_height * 0.6 + 1)
         fig, ax = plt.subplots(1, 1, figsize=(10, fig_height))
@@ -785,14 +778,12 @@ class ClassifierPlotter(BasePlotter):
                     new_block = block_num
                     break
             
+            # For equal spacing, remove block spacing logic from positioning
             if new_block and new_block != current_block:
-                if current_block is not None:
-                    y_pos -= block_spacing
                 current_block = new_block
                 block_y_ranges[current_block] = {'start': y_pos, 'end': None}
             elif current_block and new_block is None:
-                block_y_ranges[current_block]['end'] = y_pos + y_spacing - box_height/2+0.1
-                y_pos -= block_spacing
+                block_y_ranges[current_block]['end'] = y_pos + y_spacing - box_height/2 + 0.1
                 current_block = None
             
             y_positions[i] = y_pos
@@ -804,29 +795,36 @@ class ClassifierPlotter(BasePlotter):
         
         for block_num, y_range in block_y_ranges.items():
             if y_range['start'] is not None and y_range['end'] is not None:
-                block_top = y_range['start'] + box_height/2 + 0.15
-                block_bottom = y_range['end'] - box_height/2 - 0.35
-                block_height = block_top - block_bottom
+                # Use static block height same as Block 3 (4 layers)
+                # Block 3 spans: 3 * y_spacing + box_height + padding
+                static_block_height = 3 * y_spacing + box_height + 0.5
+                
+                # Anchor at bottom of last layer in block
+                block_bottom = y_range['end'] - box_height/2
+                block_top = block_bottom + static_block_height
+                
                 block_left = x_center - box_width/2 - 0.5
                 block_right = x_center + box_width/2 + 0.5
                 block_width_rect = block_right - block_left
                 
                 block_rect = FancyBboxPatch(
                     (block_left, block_bottom),
-                    block_width_rect, block_height,
-                    boxstyle="round,pad=0.02,rounding_size=0.15",
+                    block_width_rect, static_block_height,
+                    boxstyle="square,pad=0.02",
                     facecolor='#f8f9fa',
                     edgecolor='#495057',
                     linewidth=1.5,
                     linestyle='-',
                     zorder=0
                 )
+                '''
                 ax.add_patch(block_rect)
                 
                 ax.text(block_left + 0.15, block_bottom + 0.15,
                        f'Block {block_num}',
                        fontsize=9, fontweight='bold', ha='left', va='bottom',
                        color='#495057', fontfamily='sans-serif')
+                '''
         for i, layer in enumerate(layers_info):
             y_pos = y_positions[i]
             
@@ -835,7 +833,7 @@ class ClassifierPlotter(BasePlotter):
             box = FancyBboxPatch(
                 (x_center - box_width/2, y_pos - box_height/2),
                 box_width, box_height,
-                boxstyle="round,pad=0.02,rounding_size=0.08",
+                boxstyle="square,pad=0.02",
                 facecolor=color,
                 edgecolor='#37474F',
                 linewidth=1.2,
@@ -843,13 +841,11 @@ class ClassifierPlotter(BasePlotter):
             )
             ax.add_patch(box)
             
-            display_type = layer['type']
-            if layer['details']:
-                display_type += f"  ({layer['details']})"
+            display_text = f"{layer['name']}({layer['type']})"
             
-            ax.text(x_center, y_pos + 0.05,
-                   display_type,
-                   fontsize=9, fontweight='bold', ha='center', va='center',
+            ax.text(x_center, y_pos,
+                   display_text,
+                   fontsize=15, fontweight='bold', ha='center', va='center',
                    fontfamily='sans-serif', color='#1a1a2e', zorder=3)
             
             if i < n_layers - 1:
@@ -880,240 +876,6 @@ class ClassifierPlotter(BasePlotter):
         
         return output_path
 
-    def plot_dimension_architecture(self, model, output_path='dimension_architecture.png'):
-        print("\n" + "="*70)
-        print("Dimension-Correct Architecture Visualization")
-        print("="*70)
-        
-        if model is None:
-            print("Error: No model provided!")
-            return None
-        
-        layers_info = []
-        for layer in model.layers:
-            layer_type = layer.__class__.__name__
-            
-            try:
-                output_shape = list(layer.output.shape)
-            except:
-                try:
-                    output_shape = list(layer.output_shape)
-                except:
-                    output_shape = [None]
-            
-            params = layer.count_params()
-            
-            details = ""
-            if 'Conv1D' in layer_type:
-                details = f"k={layer.kernel_size[0]}"
-            elif 'MaxPooling' in layer_type:
-                details = f"p={layer.pool_size[0]}"
-            elif 'Dense' in layer_type:
-                details = f"units={layer.units}"
-            elif 'Dropout' in layer_type:
-                details = f"r={layer.rate}"
-            
-            layers_info.append({
-                'name': layer.name,
-                'type': layer_type,
-                'shape': output_shape,
-                'params': params,
-                'details': details
-            })
-        
-        layer_colors = {
-            'InputLayer': '#E3F2FD',
-            'Conv1D': '#90CAF9',
-            'BatchNormalization': '#CE93D8',
-            'MaxPooling1D': '#FFB74D',
-            'Dropout': '#EF9A9A',
-            'Dense': '#80CBC4',
-            'Flatten': '#BCAAA4',
-        }
-        
-        block_layers = {
-            1: ['conv1', 'bn1', 'pool1', 'drop1'],
-            2: ['conv2', 'bn2', 'pool2', 'drop2'],
-            3: ['conv3', 'bn3', 'pool3', 'drop3']
-        }
-        
-        n_layers = len(layers_info)
-        base_width = 2.0
-        box_height = 0.6
-        y_spacing = 1.1
-        block_spacing = 0.7
-        x_center = 8
-        
-        def get_width_for_shape(shape):
-            if len(shape) >= 2 and shape[1] is not None:
-                seq_len = shape[1]
-                width = base_width + np.log10(max(seq_len, 1)) * 1.5
-                return min(width, 10)
-            elif len(shape) >= 1 and shape[-1] is not None:
-                return base_width + np.log10(max(shape[-1], 1)) * 0.8
-            return base_width
-        
-        def format_shape(shape):
-            parts = []
-            for dim in shape:
-                if dim is None:
-                    parts.append("N")
-                elif dim > 999:
-                    parts.append(f"{dim}")
-                else:
-                    parts.append(str(dim))
-            return " × ".join(parts)
-        
-        total_height = 0
-        current_block = None
-        for i, layer in enumerate(layers_info):
-            layer_name = layer['name']
-            new_block = None
-            for block_num, block_layer_names in block_layers.items():
-                if layer_name in block_layer_names:
-                    new_block = block_num
-                    break
-            
-            if new_block and new_block != current_block:
-                total_height += block_spacing
-                current_block = new_block
-            elif current_block and new_block is None:
-                total_height += block_spacing
-                current_block = None
-            
-            total_height += y_spacing
-        
-        fig_height = max(10, total_height * 0.55 + 1)
-        fig, ax = plt.subplots(1, 1, figsize=(12, fig_height))
-        
-        y_positions = {}
-        layer_widths = {}
-        y_pos = total_height
-        current_block = None
-        block_y_ranges = {}
-        
-        for i, layer in enumerate(layers_info):
-            layer_name = layer['name']
-            new_block = None
-            for block_num, block_layer_names in block_layers.items():
-                if layer_name in block_layer_names:
-                    new_block = block_num
-                    break
-            
-            if new_block and new_block != current_block:
-                if current_block is not None:
-                    y_pos -= block_spacing
-                current_block = new_block
-                block_y_ranges[current_block] = {'start': y_pos, 'end': None}
-            elif current_block and new_block is None:
-                block_y_ranges[current_block]['end'] = y_pos + y_spacing - box_height/2
-                y_pos -= block_spacing
-                current_block = None
-            
-            y_positions[i] = y_pos
-            layer_widths[i] = get_width_for_shape(layer['shape'])
-            
-            if current_block and new_block:
-                block_y_ranges[current_block]['end'] = y_pos - box_height/2 - 0.15
-            
-            y_pos -= y_spacing
-        
-        max_width = max(layer_widths.values()) if layer_widths else base_width
-        
-        for block_num, y_range in block_y_ranges.items():
-            if y_range['start'] is not None and y_range['end'] is not None:
-                block_top = y_range['start'] + box_height/2 + 0.15
-                block_bottom = y_range['end'] - box_height/2 - 0.35
-                block_height = block_top - block_bottom
-                block_left = x_center - max_width/2 - 0.6
-                block_right = x_center + max_width/2 + 0.6
-                block_width_rect = block_right - block_left
-                
-                block_rect = FancyBboxPatch(
-                    (block_left, block_bottom),
-                    block_width_rect, block_height,
-                    boxstyle="round,pad=0.02,rounding_size=0.15",
-                    facecolor='#f8f9fa',
-                    edgecolor='#495057',
-                    linewidth=1.5,
-                    linestyle='-',
-                    zorder=0
-                )
-                ax.add_patch(block_rect)
-                
-                ax.text(block_left + 0.15, block_bottom + 0.15,
-                       f'Block {block_num}',
-                       fontsize=9, fontweight='bold', ha='left', va='bottom',
-                       color='#495057', fontfamily='sans-serif')
-        
-        for i, layer in enumerate(layers_info):
-            y_pos = y_positions[i]
-            width = layer_widths[i]
-            
-            color = layer_colors.get(layer['type'], '#E0E0E0')
-            
-            box = FancyBboxPatch(
-                (x_center - width/2, y_pos - box_height/2),
-                width, box_height,
-                boxstyle="round,pad=0.02,rounding_size=0.08",
-                facecolor=color,
-                edgecolor='#37474F',
-                linewidth=1.2,
-                zorder=2
-            )
-            ax.add_patch(box)
-            
-            short_type = layer['type'].replace('Normalization', 'Norm').replace('Pooling1D', 'Pool')
-            if layer['details']:
-                display_text = f"{short_type} ({layer['details']})"
-            else:
-                display_text = short_type
-            
-            ax.text(x_center, y_pos + 0.08,
-                   display_text,
-                   fontsize=8, fontweight='bold', ha='center', va='center',
-                   fontfamily='sans-serif', color='#1a1a2e', zorder=3)
-            
-            shape_str = format_shape(layer['shape'])
-            ax.text(x_center, y_pos - 0.12,
-                   f"[{shape_str}]",
-                   fontsize=7, ha='center', va='center',
-                   fontfamily='monospace', color='#37474F', zorder=3)
-            
-            if layer['params'] > 0:
-                ax.text(x_center + width/2 + 0.3, y_pos,
-                       f"{layer['params']:,}",
-                       fontsize=7, ha='left', va='center',
-                       color='#666666', fontfamily='sans-serif', zorder=3)
-            
-            if i < n_layers - 1:
-                next_y = y_positions[i + 1]
-                arrow = FancyArrowPatch(
-                    (x_center, y_pos - box_height/2 - 0.03),
-                    (x_center, next_y + box_height/2 + 0.03),
-                    arrowstyle=ArrowStyle('->', head_length=5, head_width=3),
-                    color='#546E7A',
-                    linewidth=1.2,
-                    zorder=1
-                )
-                ax.add_patch(arrow)
-        
-        min_y = min(y_positions.values()) - box_height/2 - 0.3
-        max_y = max(y_positions.values()) + box_height/2 + 0.3
-        ax.set_xlim(x_center - max_width/2 - 1.2, x_center + max_width/2 + 1.5)
-        ax.set_ylim(min_y, max_y)
-        ax.axis('off')
-        
-        plt.tight_layout()
-        
-        plt.savefig(output_path, dpi=200, bbox_inches='tight', 
-                   facecolor='white', edgecolor='none')
-        print(f"\n✓ Dimension architecture saved to: {output_path}")
-        
-        plt.show()
-        
-        return output_path
-    
     def plot_roc_multi_snr(self, model, logger, dataset_paths, snr_values):
         from sklearn.metrics import roc_curve, auc
         

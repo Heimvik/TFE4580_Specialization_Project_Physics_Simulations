@@ -38,6 +38,8 @@ class PiLogger:
             if model_params is not None:
                 sim.attrs['target_type'] = model_params.get('target_type', -1)
                 sim.attrs['target_conductivity'] = model_params.get('target_conductivity', 0.0)
+            
+            f.flush()
 
     def finalize_hdf5(self, filename: str, time_samples: int):
         with h5py.File(filename, 'a') as f:
@@ -55,37 +57,52 @@ class PiLogger:
             target_z_list = []
             target_types = []
             target_conductivities = []
-            
-            sim0 = f['simulations/simulation_0']
-            time = sim0['time'][:]
+            skipped_indices = []
+            time = None
             
             for i in range(num_sims):
-                sim_group = f[f'simulations/simulation_{i}']
-                decay = sim_group['decay'][:]
-                label_str = sim_group.attrs['label']
-                loop_z = sim_group.attrs['loop_z']
-                target_present = sim_group.attrs['target_present']
-                target_z = sim_group.attrs['target_z']
-                
-                if target_z == -999.0:
-                    target_z = None
-                
-                target_type = sim_group.attrs.get('target_type', -1)
-                target_conductivity = sim_group.attrs.get('target_conductivity', 0.0)
-                
-                decay_curves.append(decay)
-                label_strings.append(label_str)
-                labels.append(1 if target_present else 0)
-                loop_z_list.append(loop_z)
-                target_z_list.append(target_z)
-                target_types.append(target_type)
-                target_conductivities.append(target_conductivity)
+                try:
+                    sim_group = f[f'simulations/simulation_{i}']
+                    decay = sim_group['decay'][:]
+                    sim_time = sim_group['time'][:]
+                    
+                    if time is None:
+                        time = sim_time
+                    
+                    label_str = sim_group.attrs['label']
+                    loop_z = sim_group.attrs['loop_z']
+                    target_present = sim_group.attrs['target_present']
+                    target_z = sim_group.attrs['target_z']
+                    
+                    if target_z == -999.0:
+                        target_z = None
+                    
+                    target_type = sim_group.attrs.get('target_type', -1)
+                    target_conductivity = sim_group.attrs.get('target_conductivity', 0.0)
+                    
+                    decay_curves.append(decay)
+                    label_strings.append(label_str)
+                    labels.append(1 if target_present else 0)
+                    loop_z_list.append(loop_z)
+                    target_z_list.append(target_z)
+                    target_types.append(target_type)
+                    target_conductivities.append(target_conductivity)
+                    
+                except (OSError, KeyError) as e:
+                    skipped_indices.append(i)
+                    print(f"Warning: Skipping missing/corrupted simulation_{i}: {e}")
+                    continue
+            
+            if skipped_indices:
+                print(f"\nWarning: Skipped {len(skipped_indices)} missing/corrupted simulations: {skipped_indices}")
             
             decay_curves = np.array(decay_curves)
             labels = np.array(labels)
+            loaded_count = len(decay_curves)
             
             metadata = {
-                'num_simulations': num_sims,
+                'num_simulations': loaded_count,
+                'num_simulations_original': num_sims,
                 'num_target_present': f['metadata'].attrs['num_target_present'],
                 'num_target_absent': f['metadata'].attrs['num_target_absent'],
                 'time_samples': f['metadata'].attrs['time_samples'],
@@ -93,10 +110,11 @@ class PiLogger:
                 'loop_z': np.array(loop_z_list),
                 'target_z': np.array(target_z_list, dtype=object),
                 'target_types': np.array(target_types),
-                'target_conductivities': np.array(target_conductivities)
+                'target_conductivities': np.array(target_conductivities),
+                'skipped_indices': skipped_indices
             }
         
-        print(f"Loaded {num_sims} simulations from HDF5")
+        print(f"Loaded {loaded_count}/{num_sims} simulations from HDF5")
         return time, decay_curves, labels, label_strings, metadata
     
     def print_hdf5_metadata(self, filename: str):

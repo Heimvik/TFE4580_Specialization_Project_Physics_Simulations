@@ -401,8 +401,8 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
         print("\nOptions:")
         print("  1. Visualize dataset")
         print("  2. Print dataset statistics")
-        print("  3. Split dataset")
-        print("  4. Condition dataset")
+        print("  3. Condition dataset")
+        print("  4. Split dataset")
         print("  5. Train classifier")
         print("  6. Validate classifier")
         print("  7. Test classifier")
@@ -431,7 +431,7 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
             except Exception as e:
                 print(f"Error: {e}")
         
-        elif choice == '3':
+        elif choice == '4':
             # Split and load dataset
             try:
                 print("\nDataset Split Ratios:")
@@ -460,7 +460,7 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                 import traceback
                 traceback.print_exc()
         
-        elif choice == '4':
+        elif choice == '3':
             # Condition dataset
             try:
                 print(f"\n{'='*70}")
@@ -471,7 +471,7 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                 time, decay_curves, labels, label_strings, metadata = logger.load_from_hdf5(hdf5_file)
                 
                 print("Applying conditioning (log-scale + min-max normalization)...")
-                I_1 = conditioner.condition_dataset(
+                I_1, time = conditioner.condition_dataset(
                     decay_curves,
                     time
                 )
@@ -482,8 +482,11 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                 conditioned_file = os.path.join(base_dir, f"{base_name}_conditioned.h5")
                 
                 print(f"\nSaving conditioned dataset to: {conditioned_file}")
-                logger.initialize_hdf5(conditioned_file, metadata['num_target_present'], 
-                                     metadata['num_target_absent'])
+                # Count actual target present/absent from loaded data (may differ if corrupted sims were skipped)
+                actual_target_present = int(np.sum(labels == 1))
+                actual_target_absent = int(np.sum(labels == 0))
+                logger.initialize_hdf5(conditioned_file, actual_target_present, 
+                                     actual_target_absent)
                 
                 for i in range(len(decay_curves)):
                     sim_metadata = {
@@ -731,10 +734,8 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                     print("  [1] Calculate FLOPs (computational cost)")
                     print("  [2] Model Architecture Diagram (PNG)")
                     print("  [3] Full LaTeX Report (document)")
-                    print("  [4] TikZ Architecture Diagram")
-                    print("  [5] Layer-by-layer Summary")
-                    print("  [6] Build model (without training)")
-                    print("  [7] Dimension-Correct Architecture (PNG)")
+                    print("  [4] Layer-by-layer Summary")
+                    print("  [5] Build model (without training)")
                     print("  [b] Back")
                     
                     analysis_choice = input("\nSelect option: ").strip().lower()
@@ -794,17 +795,6 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                     
                     elif analysis_choice == '4':
                         if classifier.model is None:
-                            try:
-                                input_len = int(input("Enter input length [50]: ").strip() or "50")
-                            except ValueError:
-                                input_len = 50
-                            classifier.build_model(input_len)
-                        
-                        tikz_file = os.path.join(os.path.dirname(hdf5_file), "model_architecture.tex")
-                        classifier.generate_architecture_tikz(output_file=tikz_file)
-                    
-                    elif analysis_choice == '5':
-                        if classifier.model is None:
                             print("\nNo model loaded. Build or load a model first.")
                         else:
                             print(f"\n{'='*70}")
@@ -812,24 +802,13 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                             print(f"{'='*70}")
                             classifier.model.summary()
                     
-                    elif analysis_choice == '6':
+                    elif analysis_choice == '5':
                         try:
                             input_len = int(input("Enter input length [50]: ").strip() or "50")
                         except ValueError:
                             input_len = 50
                         classifier.build_model(input_len)
                         print("\n✓ Model built successfully!")
-                    
-                    elif analysis_choice == '7':
-                        if classifier.model is None:
-                            try:
-                                input_len = int(input("Enter input length [1024]: ").strip() or "1024")
-                            except ValueError:
-                                input_len = 1024
-                            classifier.build_model(input_len)
-                        
-                        output_path = os.path.join(os.path.dirname(hdf5_file), "dimension_architecture.png")
-                        plotter.plot_dimension_architecture(classifier.model, output_path=output_path)
                     
                     elif analysis_choice == 'b':
                         break
