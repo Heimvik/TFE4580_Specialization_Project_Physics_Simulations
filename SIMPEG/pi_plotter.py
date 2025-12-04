@@ -7,6 +7,8 @@ import matplotlib.patches as mpatches
 from simpeg import maps
 from discretize import CylindricalMesh
 import h5py
+from sklearn.metrics import roc_curve, auc
+
 
 
 class BasePlotter:
@@ -147,10 +149,10 @@ class PiPlotter(BasePlotter):
                 plt.plot(time_us, decay, color=colors[i], 
                           linewidth=2, label=f"{label_prefix} {label}")
         
-        plt.xlabel('Time [μs]', fontsize=18)
-        #plt.ylabel(r'$\\left\\frac{\\partial B_{z}}{\\partial t}\\right$ [T/s]', fontsize=18)
-        plt.tick_params(labelsize=18)
-        plt.legend(fontsize=12, bbox_to_anchor=(1.05, 1), loc='upper left')
+        plt.xlabel('Time [μs]', fontsize=20)
+        #plt.ylabel(r'$\\left\\frac{\\partial B_{z}}{\\partial t}\\right$ [T/s]', fontsize=20)
+        plt.tick_params(labelsize=20)
+        plt.legend(fontsize=20, bbox_to_anchor=(1.05, 1), loc='upper left')
         plt.grid(True, alpha=0.3, which='both')
         plt.tight_layout()
         plt.show()
@@ -202,7 +204,7 @@ class PiPlotter(BasePlotter):
         print(f"\nPlotting {len(selected_indices)} simulation(s)...")
         
         fig = plt.figure(figsize=(24, 11))
-        gs = fig.add_gridspec(1, 2, width_ratios=[2, 3], wspace=0.07)
+        gs = fig.add_gridspec(1, 2, width_ratios=[2, 3], wspace=0.01)
         ax_model = fig.add_subplot(gs[0, 0])
         ax_decay = fig.add_subplot(gs[0, 1])
         
@@ -230,9 +232,9 @@ class PiPlotter(BasePlotter):
                  markerfacecolor=color, markeredgecolor='black', markeredgewidth=1.5,
                  label=f"{meta['label']}")
         
-        ax_model.set_xlabel('Radial Distance [m]', fontsize=18)
-        ax_model.set_ylabel('Depth [m]', fontsize=18)
-        ax_model.tick_params(labelsize=18)
+        ax_model.set_xlabel('Radial Distance [m]', fontsize=20)
+        ax_model.set_ylabel('Depth [m]', fontsize=20)
+        ax_model.tick_params(labelsize=20)
         
         ax_model.grid(True, alpha=0.3)
         ax_model.set_xlim([0, self.cfg.tx_radius + 0.1])
@@ -247,9 +249,9 @@ class PiPlotter(BasePlotter):
             ax_decay.loglog(time_us, decay, color=color, linewidth=2.5, alpha=0.9,
                    label=f"{meta['label']}", marker='.')
         
-        ax_decay.set_xlabel('Time [μs]', fontsize=18)
-        ax_decay.set_ylabel(r'$\left|\frac{\partial B_{z}}{\partial t}\right|$ [T/s]', fontsize=18)
-        ax_decay.tick_params(labelsize=18)
+        ax_decay.set_xlabel('Time [μs]', fontsize=20)
+        ax_decay.set_ylabel(r'$\frac{\partial B_{z}}{\partial t}$ [T/s]', fontsize=20)
+        ax_decay.tick_params(labelsize=20)
         
         ax_decay.grid(True, alpha=0.3, which='both')
         
@@ -265,10 +267,9 @@ class PiPlotter(BasePlotter):
         else:
             ncol = 3
         
-        fig.legend(handles, labels, fontsize=16, loc ='lower center',
+        fig.legend(handles, labels, fontsize=20, loc ='lower center',
                   ncol=ncol, framealpha=0.9)
         
-        plt.subplots_adjust(left=0.06, right=0.98, top=0.98, bottom=0.12, wspace=0.25)
         plt.show()
     
     def plot_conductivity_models(self):
@@ -277,29 +278,41 @@ class PiPlotter(BasePlotter):
             return
         
         available_sims = []
+        type_names = ['No Target', 'Hollow Cylinder', 'Shredded Can', 'Solid Block']
+        
         for metadata in self.simulations_metadata:
             target_type = metadata['target_type']
+            target_conductivity = metadata.get('target_conductivity', self.cfg.aluminum_conductivity)
+            target_z = metadata['target_z']
+            loop_z = metadata['loop_z']
+            
+            # Handle both target-present and target-absent cases
             if target_type > 0:
-                target_conductivity = metadata.get('target_conductivity', self.cfg.aluminum_conductivity)
-                target_z = metadata['target_z']
-                type_names = ['No Target', 'Hollow Cylinder', 'Shredded Can', 'Solid Block']
                 status = f"Type: {type_names[target_type]}, σ={target_conductivity:.1e} S/m, z={target_z:.3f}m"
-                available_sims.append((metadata['index'], metadata['loop_z'], status, target_type, target_conductivity, target_z))
+            else:
+                status = f"Type: {type_names[0]} (soil + air only)"
+                target_type = 0  # Ensure it's 0 for no target
+                target_z = None
+            
+            available_sims.append((metadata['index'], loop_z, status, target_type, target_conductivity, target_z))
         
         if not available_sims:
-            print("\\nNo target simulations found.")
+            print("\\nNo simulations found.")
             return
         
         print(f"\\nAvailable simulations:")
-        for idx, (_, _, status, _, _, _) in enumerate(available_sims[:10]):
+        for idx, (_, _, status, _, _, _) in enumerate(available_sims[:20]):
             print(f"  [{idx+1:2d}] {status}")
         
         try:
-            choice = input(f"\nSelect simulation [1-{min(10, len(available_sims))}]: ").strip()
+            choice = input(f"\nSelect simulation [1-{min(20, len(available_sims))}]: ").strip()
             sim_data = available_sims[int(choice) - 1]
-            _, _, status, target_type, target_conductivity, target_z = sim_data
+            _, loop_z, status, target_type, target_conductivity, target_z = sim_data
             
-            print(f"\\nGenerating model: type={target_type}, σ={target_conductivity:.1e}, z={target_z:.3f}m")
+            if target_type > 0:
+                print(f"\\nGenerating model: type={target_type}, σ={target_conductivity:.1e}, z={target_z:.3f}m")
+            else:
+                print(f"\\nGenerating model: No target (soil + air only)")
 
             model, _ = self.simulator.create_conductivity_model(self.mesh, target_z, target_type, target_conductivity)
             
@@ -307,18 +320,20 @@ class PiPlotter(BasePlotter):
                 print("Error generating model.")
                 return
                 
-            self._plot_model_2d(model, status, self.mesh, self.ind_active)
+            self._plot_model_2d(model, status, self.mesh, self.ind_active, loop_z=loop_z)
             
         except (ValueError, IndexError) as e:
             print(f"Invalid selection: {e}")
     
-    def _plot_model_2d(self, model, title, mesh=None, ind_active=None):
+    def _plot_model_2d(self, model, title, mesh=None, ind_active=None, loop_z=None):
         if mesh is None:
             mesh = self.mesh
         if ind_active is None:
             ind_active = self.ind_active
+        if loop_z is None:
+            loop_z = self.cfg.loop_z
             
-        fig, ax = plt.subplots(1, 1, figsize=(12, 8))
+        fig, ax = plt.subplots(1, 1, figsize=(14, 8))
         
         num_target_cells = np.sum(model > self.cfg.soil_conductivity * 10)
         print(f"Plotting model with {num_target_cells} target cells")
@@ -330,15 +345,26 @@ class PiPlotter(BasePlotter):
                             clim=(np.log10(self.cfg.air_conductivity), 
                                   np.log10(self.cfg.aluminum_conductivity)))
         
+        # Add colorbar for conductivity
+        cbar = plt.colorbar(im[0], ax=ax, pad=0.02)
+        cbar.set_label(r'$\log_{10}(\sigma)$ [S/m]', fontsize=20)
+        cbar.ax.tick_params(labelsize=18)
+        
         ax.axhline(y=0, color='brown', linestyle='-', linewidth=3, alpha=0.8, label='Ground surface')
         
-        ax.set_xlabel('Radial Distance [m]', fontsize=18)
-        ax.set_ylabel('Elevation [m]', fontsize=18)
-        ax.set_title(f'Conductivity Model: {title}', fontsize=16)
-        ax.tick_params(labelsize=18)
-        ax.legend(fontsize=16)
+        # Plot transmitter loop
+        loop_radius = float(self.cfg.tx_radius)
+        ax.plot([0, loop_radius], [loop_z, loop_z], 
+               color='blue', linewidth=2.5, marker='o', markersize=8,
+               label=f'TX/RX coil (z={loop_z:.3f}m)')
+        
+        ax.set_xlabel('Radial Distance [m]', fontsize=20)
+        ax.set_ylabel('Elevation [m]', fontsize=20)
+        ax.tick_params(labelsize=20)
+        ax.legend(fontsize=20)
         ax.grid(True, alpha=0.3)
         ax.set_xlim([0, 0.5])
+        ax.set_ylim([-0.5, 0.7])
         
         plt.tight_layout()
         plt.show()
@@ -355,23 +381,22 @@ class ClassifierPlotter(BasePlotter):
     
     def plot_training_history(self, history):
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
-        fig.suptitle('Training History', fontsize=16, fontweight='bold')
         
-        ax1.plot(history.history['accuracy'], label='Training Accuracy', linewidth=2)
-        ax1.plot(history.history['val_accuracy'], label='Validation Accuracy', linewidth=2)
-        ax1.set_xlabel('Epoch', fontsize=11)
-        ax1.set_ylabel('Accuracy', fontsize=11)
-        ax1.set_title('Model Accuracy', fontsize=12)
-        ax1.legend()
+        ax1.plot(history.history['accuracy'], label='Training accuracy', linewidth=2)
+        ax1.plot(history.history['val_accuracy'], label='Validation accuracy', linewidth=2)
+        ax1.set_xlabel('Epoch', fontsize=20)
+        ax1.set_ylabel('Accuracy', fontsize=20)
+        ax1.legend(fontsize=20)
         ax1.grid(True, alpha=0.3)
+        ax1.tick_params(labelsize=20)
         
-        ax2.plot(history.history['loss'], label='Training Loss', linewidth=2)
-        ax2.plot(history.history['val_loss'], label='Validation Loss', linewidth=2)
-        ax2.set_xlabel('Epoch', fontsize=11)
-        ax2.set_ylabel('Loss', fontsize=11)
-        ax2.set_title('Model Loss', fontsize=12)
-        ax2.legend()
+        ax2.plot(history.history['loss'], label='Training loss', linewidth=2)
+        ax2.plot(history.history['val_loss'], label='Validation loss', linewidth=2)
+        ax2.set_xlabel('Epoch', fontsize=20)
+        ax2.set_ylabel('Loss', fontsize=20)
+        ax2.legend(fontsize=20)
         ax2.grid(True, alpha=0.3)
+        ax2.tick_params(labelsize=20)
         
         plt.tight_layout()
         plt.show()
@@ -403,28 +428,26 @@ class ClassifierPlotter(BasePlotter):
         
         fig, ax = plt.subplots(figsize=(8, 6))
         sns.heatmap(cm, annot=True, fmt=fmt, cmap='Blues', square=True,
-                   xticklabels=['No Target', 'Target Present'],
-                   yticklabels=['No Target', 'Target Present'],
-                   cbar_kws={'label': 'Count' if not normalize else 'Proportion'},
-                   ax=ax, annot_kws={'size': 14})
+               xticklabels=['$C_A$', '$C_P$'],
+               yticklabels=['$C_A$', '$C_P$'],
+               cbar_kws={'label': 'Count' if not normalize else 'Proportion'},
+               ax=ax, annot_kws={'size': 20})
+        ax.tick_params(axis='x', labelsize=20)
+        ax.tick_params(axis='y', labelsize=20)
         
-        ax.set_ylabel('True Label', fontsize=14)
-        ax.set_xlabel('Predicted Label', fontsize=14)
-        ax.set_title(title, fontsize=16, fontweight='bold')
+        ax.set_ylabel('True class', fontsize=20)
+        ax.set_xlabel('Predicted class', fontsize=20)
         
         plt.tight_layout()
         plt.show()
-        
         print("\nClassification Report:")
         print("="*70)
-        target_names = ['No Target', 'Target Present']
+        target_names = ['$C_A$', '$C_P$']
         print(classification_report(y_test, y_pred, target_names=target_names))
         
         return cm
     
     def plot_roc_curve(self, X_test, y_test):
-        from sklearn.metrics import roc_curve, auc
-        
         if self.model is None:
             print("Error: No model set!")
             return
@@ -446,11 +469,11 @@ class ClassifierPlotter(BasePlotter):
         
         ax.set_xlim([0.0, 1.0])
         ax.set_ylim([0.0, 1.05])
-        ax.set_xlabel('False Positive Rate', fontsize=14)
-        ax.set_ylabel('True Positive Rate', fontsize=14)
-        ax.set_title('Receiver Operating Characteristic (ROC) Curve', fontsize=16, fontweight='bold')
-        ax.legend(loc="lower right", fontsize=12)
+        ax.set_xlabel('Probability of false alarm ($P_{FA}$)', fontsize=20)
+        ax.set_ylabel('Probability of detection ($P_{D}$)', fontsize=20)
+        ax.legend(loc="lower right", fontsize=20)
         ax.grid(True, alpha=0.3)
+        ax.tick_params(labelsize=20)
         
         plt.tight_layout()
         plt.show()
@@ -477,33 +500,32 @@ class ClassifierPlotter(BasePlotter):
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
         
         ax1.hist(target_present_probs, bins=30, alpha=0.6, color='green', 
-                label='True: Target Present', edgecolor='black')
+                label='$C_P$', edgecolor='black')
         ax1.hist(target_absent_probs, bins=30, alpha=0.6, color='blue', 
-                label='True: No Target', edgecolor='black')
-        ax1.axvline(0.5, color='red', linestyle='--', linewidth=2, label='Decision Threshold')
-        ax1.set_xlabel('Predicted Probability (Target Present)', fontsize=12)
-        ax1.set_ylabel('Frequency', fontsize=12)
-        ax1.set_title('Prediction Probability Distribution', fontsize=14, fontweight='bold')
-        ax1.legend(fontsize=11)
+                label='$C_A$', edgecolor='black')
+        ax1.axvline(0.5, color='red', linestyle='--', linewidth=2, label='Decision threshold')
+        ax1.set_xlabel('Predicted probability ($C_P$)', fontsize=20)
+        ax1.set_ylabel('Frequency', fontsize=20)
+        ax1.legend(fontsize=20)
         ax1.grid(True, alpha=0.3)
+        ax1.tick_params(labelsize=20)
         
         data_to_plot = [target_absent_probs, target_present_probs]
-        bp = ax2.boxplot(data_to_plot, labels=['True: No Target', 'True: Target Present'],
-                        patch_artist=True, showmeans=True)
+        bp = ax2.boxplot(data_to_plot, labels=['$C_A$', '$C_P$'],
+                patch_artist=True, showmeans=True)
+        ax2.set_xticklabels(ax2.get_xticklabels(), fontsize=20)
         bp['boxes'][0].set_facecolor('blue')
         bp['boxes'][1].set_facecolor('green')
-        ax2.axhline(0.5, color='red', linestyle='--', linewidth=2, label='Decision Threshold')
-        ax2.set_ylabel('Predicted Probability (Target Present)', fontsize=12)
-        ax2.set_title('Prediction Confidence by True Label', fontsize=14, fontweight='bold')
-        ax2.legend(fontsize=11)
+        ax2.axhline(0.5, color='red', linestyle='--', linewidth=2, label='Decision threshold')
+        ax2.set_ylabel('Predicted probability ($C_P$)', fontsize=20)
+        ax2.legend(fontsize=20)
         ax2.grid(True, alpha=0.3, axis='y')
+        ax2.tick_params(labelsize=20)
         
         plt.tight_layout()
         plt.show()
 
     def plot_roc_pfa_pd(self, X_test, y_test, snr_db=None, num_thresholds=100):
-        from sklearn.metrics import roc_curve, auc
-        
         if self.model is None:
             print("Error: No model set!")
             return None
@@ -542,13 +564,9 @@ class ClassifierPlotter(BasePlotter):
         
         ax1.set_xlim([0.0, 1.0])
         ax1.set_ylim([0.0, 1.05])
-        ax1.set_xlabel('Probability of False Alarm (Pfa)', fontsize=12)
-        ax1.set_ylabel('Probability of Detection (Pd)', fontsize=12)
-        title = 'ROC Curve: Pd vs Pfa'
-        if snr_db is not None:
-            title += f' (SNR = {snr_db} dB)'
-        ax1.set_title(title, fontsize=14, fontweight='bold')
-        ax1.legend(loc="lower right", fontsize=11)
+        ax1.set_xlabel('Probability of False Alarm (Pfa)', fontsize=20)
+        ax1.set_ylabel('Probability of Detection (Pd)', fontsize=20)
+        ax1.legend(loc="lower right", fontsize=20)
         ax1.grid(True, alpha=0.3)
         
         # Plot 2: Semi-log ROC
@@ -559,10 +577,9 @@ class ClassifierPlotter(BasePlotter):
         
         ax2.set_xlim([1e-4, 1.0])
         ax2.set_ylim([0.0, 1.05])
-        ax2.set_xlabel('Probability of False Alarm (Pfa) - Log Scale', fontsize=12)
-        ax2.set_ylabel('Probability of Detection (Pd)', fontsize=12)
-        ax2.set_title('ROC Curve (Log Pfa Scale)', fontsize=14, fontweight='bold')
-        ax2.legend(loc="lower right", fontsize=11)
+        ax2.set_xlabel('Probability of False Alarm (Pfa) - Log Scale', fontsize=20)
+        ax2.set_ylabel('Probability of Detection (Pd)', fontsize=20)
+        ax2.legend(loc="lower right", fontsize=20)
         ax2.grid(True, alpha=0.3, which='both')
         
         # Plot 3: Pd at specific Pfa values
@@ -585,10 +602,9 @@ class ClassifierPlotter(BasePlotter):
         
         ax3.set_xlim([1e-4, 1.0])
         ax3.set_ylim([0.0, 1.05])
-        ax3.set_xlabel('Probability of False Alarm (Pfa)', fontsize=12)
-        ax3.set_ylabel('Probability of Detection (Pd)', fontsize=12)
-        ax3.set_title('Detection Performance vs Pfa', fontsize=14, fontweight='bold')
-        ax3.legend(loc="lower right", fontsize=11)
+        ax3.set_xlabel('Probability of False Alarm (Pfa)', fontsize=20)
+        ax3.set_ylabel('Probability of Detection (Pd)', fontsize=20)
+        ax3.legend(loc="lower right", fontsize=20)
         ax3.grid(True, alpha=0.3, which='both')
         
         plt.tight_layout()
@@ -624,7 +640,6 @@ class ClassifierPlotter(BasePlotter):
         print(f"  - Time samples: {len(time)}")
         
         fig, axes = plt.subplots(2, 2, figsize=(16, 10))
-        fig.suptitle('Training Data Overview', fontsize=16, fontweight='bold')
         
         time_us = time * 1e6
         
@@ -638,49 +653,48 @@ class ClassifierPlotter(BasePlotter):
         num_target_present = np.sum(labels == 1)
         num_target_absent = np.sum(labels == 0)
         legend_elements = [
-            Line2D([0], [0], color='green', lw=2, label=f'Target Present ({num_target_present})'),
-            Line2D([0], [0], color='blue', lw=2, label=f'Target Absent ({num_target_absent})')
+            Line2D([0], [0], color='green', lw=2, label=f'$C_P$ ({num_target_present})'),
+            Line2D([0], [0], color='blue', lw=2, label=f'$C_A$ ({num_target_absent})')
         ]
-        ax.legend(handles=legend_elements, loc='upper right')
-        ax.set_xlabel('Time [μs]', fontsize=11)
-        ax.set_ylabel('-dBz/dt [T/s]', fontsize=11)
-        ax.set_title('All Decay Curves', fontsize=12)
+        ax.legend(handles=legend_elements, loc='upper right', fontsize=20)
+        ax.set_xlabel('Time [μs]', fontsize=20)
+        ax.set_ylabel('-dBz/dt [T/s]', fontsize=20)
         ax.grid(True, alpha=0.3, which='both')
+        ax.tick_params(labelsize=20)
         
         # Plot 2: Sample target-present curves
         ax = axes[0, 1]
         target_present_indices = np.where(labels == 1)[0][:5]
         for idx in target_present_indices:
             ax.loglog(time_us, decay_curves[idx], linewidth=2, label=label_strings[idx])
-        ax.set_xlabel('Time [μs]', fontsize=11)
-        ax.set_ylabel('-dBz/dt [T/s]', fontsize=11)
-        ax.set_title('Sample: Target Present', fontsize=12)
-        ax.legend(fontsize=8)
+        ax.set_xlabel('Time [μs]', fontsize=20)
+        ax.set_ylabel('-dBz/dt [T/s]', fontsize=20)
+        ax.legend(fontsize=20)
         ax.grid(True, alpha=0.3, which='both')
+        ax.tick_params(labelsize=20)
         
         # Plot 3: Sample target-absent curves
         ax = axes[1, 0]
         target_absent_indices = np.where(labels == 0)[0][:5]
         for idx in target_absent_indices:
             ax.loglog(time_us, decay_curves[idx], linewidth=2, label=label_strings[idx])
-        ax.set_xlabel('Time [μs]', fontsize=11)
-        ax.set_ylabel('-dBz/dt [T/s]', fontsize=11)
-        ax.set_title('Sample: Target Absent', fontsize=12)
-        ax.legend(fontsize=8)
+        ax.set_xlabel('Time [μs]', fontsize=20)
+        ax.set_ylabel('-dBz/dt [T/s]', fontsize=20)
+        ax.legend(fontsize=20)
         ax.grid(True, alpha=0.3, which='both')
+        ax.tick_params(labelsize=20)
         
         # Plot 4: Simple stats
         ax = axes[1, 1]
         ax.text(0.5, 0.7, f'Total Samples: {len(decay_curves)}', 
-                ha='center', va='center', fontsize=14)
-        ax.text(0.5, 0.5, f'Target Present: {num_target_present}', 
-                ha='center', va='center', fontsize=14, color='green')
-        ax.text(0.5, 0.3, f'Target Absent: {num_target_absent}', 
-                ha='center', va='center', fontsize=14, color='blue')
+                ha='center', va='center', fontsize=20)
+        ax.text(0.5, 0.5, f'$C_P$: {num_target_present}', 
+                ha='center', va='center', fontsize=20, color='green')
+        ax.text(0.5, 0.3, f'$C_A$: {num_target_absent}', 
+                ha='center', va='center', fontsize=20, color='blue')
         ax.set_xlim(0, 1)
         ax.set_ylim(0, 1)
         ax.axis('off')
-        ax.set_title('Dataset Statistics', fontsize=12)
         
         plt.tight_layout()
         plt.show()
@@ -926,23 +940,166 @@ class ClassifierPlotter(BasePlotter):
                            label=f'SNR = {snr} dB')
         
         axes[0].plot([0, 1], [0, 1], 'k--', lw=1, label='Random')
-        axes[0].set_xlabel('Probability of False Alarm (Pfa)', fontsize=12)
-        axes[0].set_ylabel('Probability of Detection (Pd)', fontsize=12)
-        axes[0].set_title('ROC Curves: Multiple SNR Levels', fontsize=14, fontweight='bold')
-        axes[0].legend(loc='lower right', fontsize=10)
+        axes[0].set_xlabel('Probability of False Alarm (Pfa)', fontsize=20)
+        axes[0].set_ylabel('Probability of Detection (Pd)', fontsize=20)
+        axes[0].legend(loc='lower right', fontsize=20)
         axes[0].grid(True, alpha=0.3)
         axes[0].set_xlim([0, 1])
         axes[0].set_ylim([0, 1.05])
+        axes[0].tick_params(labelsize=20)
         
-        axes[1].set_xlabel('Probability of False Alarm (Pfa) - Log Scale', fontsize=12)
-        axes[1].set_ylabel('Probability of Detection (Pd)', fontsize=12)
-        axes[1].set_title('ROC Curves (Log Pfa)', fontsize=14, fontweight='bold')
-        axes[1].legend(loc='lower right', fontsize=10)
+        axes[1].set_xlabel('Probability of False Alarm (Pfa) - Log Scale', fontsize=20)
+        axes[1].set_ylabel('Probability of Detection (Pd)', fontsize=20)
+        axes[1].legend(loc='lower right', fontsize=20)
         axes[1].grid(True, alpha=0.3, which='both')
         axes[1].set_xlim([1e-4, 1])
         axes[1].set_ylim([0, 1.05])
+        axes[1].tick_params(labelsize=20)
         
         plt.tight_layout()
         plt.show()
+        
+        return results
+    
+    def plot_roc_multi_snr_noise(self, model, time, X_test, y_test, snr_values, late_time, 
+                                  conditioner=None, use_quantized=False, tflite_predict_fn=None):
+        """
+        Plot ROC curves for multiple SNR values by adding noise to test data in memory.
+        
+        Parameters:
+        -----------
+        model : Keras model or None
+            The trained Keras model (if not using quantized)
+        time : np.ndarray
+            Time array for the decay curves
+        X_test : np.ndarray
+            Test data (decay curves reshaped for model input)
+        y_test : np.ndarray
+            Test labels
+        snr_values : list
+            List of SNR values in dB to test
+        late_time : float
+            Late time value for noise calculation (defines signal region)
+        conditioner : PiConditioner, optional
+            Conditioner object with add_noise method
+        use_quantized : bool
+            Whether to use quantized (TFLite) model for inference
+        tflite_predict_fn : callable, optional
+            Function to run TFLite inference (required if use_quantized=True)
+        """
+        from sklearn.metrics import roc_curve, auc
+        
+        if model is None and not use_quantized:
+            print("Error: No model provided!")
+            return None
+        
+        if use_quantized and tflite_predict_fn is None:
+            print("Error: TFLite predict function required for quantized model!")
+            return None
+        
+        print("\n" + "="*70)
+        print("Multi-SNR ROC Analysis (In-Memory Noise Addition)")
+        print("="*70)
+        print(f"Test samples: {len(X_test)}")
+        print(f"SNR values: {snr_values} dB")
+        print(f"Using quantized model: {use_quantized}")
+        
+        fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+        
+        colors = plt.cm.viridis(np.linspace(0, 1, len(snr_values)))
+        results = {}
+        
+        # Get original decay curves (remove channel dimension if present)
+        if X_test.ndim == 3:
+            decay_curves_orig = X_test.squeeze(axis=-1)  # Remove channel dim
+        else:
+            decay_curves_orig = X_test
+        
+        for i, (snr, color) in enumerate(zip(snr_values, colors)):
+            print(f"\nProcessing SNR = {snr} dB...")
+            
+            # Add noise to each sample in memory
+            if conditioner is not None:
+                decay_curves_noisy = np.zeros_like(decay_curves_orig)
+                for j in range(len(decay_curves_orig)):
+                    decay_curves_noisy[j] = conditioner.add_noise(
+                        time, decay_curves_orig[j], late_time, snr
+                    )
+            else:
+                # Simple noise addition if no conditioner provided
+                signal_power = np.mean(decay_curves_orig**2, axis=1, keepdims=True)
+                snr_linear = 10**(snr / 10)
+                noise_power = signal_power / snr_linear
+                noise_std = np.sqrt(noise_power)
+                noise = np.random.normal(0, 1, decay_curves_orig.shape) * noise_std
+                decay_curves_noisy = decay_curves_orig + noise
+            
+            # Reshape for model input (add channel dimension)
+            X_noisy = decay_curves_noisy.reshape(len(decay_curves_noisy), -1, 1)
+            
+            # Get predictions
+            if use_quantized:
+                y_pred_proba = tflite_predict_fn(X_noisy)
+            else:
+                y_pred_proba = model.predict(X_noisy, verbose=0)
+            
+            # Get probability of target being present (class 1)
+            if y_pred_proba.ndim > 1 and y_pred_proba.shape[1] > 1:
+                y_pred_proba_target = y_pred_proba[:, 1]
+            else:
+                y_pred_proba_target = y_pred_proba.flatten()
+            
+            # Calculate ROC curve
+            pfa, pd, thresholds = roc_curve(y_test, y_pred_proba_target)
+            roc_auc = auc(pfa, pd)
+            
+            results[snr] = {
+                'pfa': pfa,
+                'pd': pd,
+                'thresholds': thresholds,
+                'auc': roc_auc
+            }
+            
+            print(f"  AUC = {roc_auc:.4f}")
+            
+            # Plot on linear scale
+            axes[0].plot(pfa, pd, color=color, lw=2, 
+                        label=f'SNR = {snr} dB (AUC = {roc_auc:.3f})')
+            
+            # Plot on log scale
+            valid_mask = pfa > 0
+            axes[1].semilogx(pfa[valid_mask], pd[valid_mask], color=color, lw=2,
+                           label=f'SNR = {snr} dB')
+        
+        # Configure linear scale plot
+        axes[0].plot([0, 1], [0, 1], 'k--', lw=1, label='Random')
+        axes[0].set_xlabel('Probability of False Alarm (Pfa)', fontsize=20)
+        axes[0].set_ylabel('Probability of Detection (Pd)', fontsize=20)
+        axes[0].legend(loc='lower right', fontsize=20)
+        axes[0].grid(True, alpha=0.3)
+        axes[0].set_xlim([0, 1])
+        axes[0].set_ylim([0, 1.05])
+        axes[0].tick_params(labelsize=20)
+        
+        # Configure log scale plot
+        axes[1].set_xlabel('Probability of False Alarm (Pfa) - Log Scale', fontsize=20)
+        axes[1].set_ylabel('Probability of Detection (Pd)', fontsize=20)
+        axes[1].legend(loc='lower right', fontsize=20)
+        axes[1].grid(True, alpha=0.3, which='both')
+        axes[1].set_xlim([1e-4, 1])
+        axes[1].set_ylim([0, 1.05])
+        axes[1].tick_params(labelsize=20)
+        
+        plt.tight_layout()
+        plt.show()
+        
+        # Print summary table
+        print("\n" + "="*70)
+        print("Summary")
+        print("="*70)
+        print(f"{'SNR (dB)':<12} {'AUC':<10}")
+        print("-"*22)
+        for snr in snr_values:
+            print(f"{snr:<12} {results[snr]['auc']:.4f}")
         
         return results

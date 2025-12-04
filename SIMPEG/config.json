@@ -23,7 +23,7 @@
     "target_height": 0.12,
     "target_thickness": 0.005,
 
-    "loop_z_range": [0.4, 0.5],
+    "loop_z_range": [0.3, 0.6],
     "target_z_range": [0, 0.3],
 
     "air_conductivity": 1e-8,
@@ -40,7 +40,7 @@
     "time_channel_end": 5e-4,
     "time_channel_step": 1e-6,
     
-    "time_steps": [[1e-6, 1024]],
+    "time_steps": [[1e-6, 1100]],
     
     "mesh_dh": 0.02,
     "mesh_dom_width": 2.0,

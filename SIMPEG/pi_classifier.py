@@ -57,6 +57,81 @@ class PiClassifier():
         
         return model_path
     
+    def load_quantized_model(self, model_path):
+        """Load a quantized TFLite model for inference."""
+        print("\n" + "="*70)
+        print("Loading Quantized TFLite Model")
+        print("="*70)
+        
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f"Model file not found: {model_path}")
+        
+        # Load TFLite model
+        self.tflite_interpreter = tf.lite.Interpreter(model_path=model_path)
+        self.tflite_interpreter.allocate_tensors()
+        
+        # Get input/output details
+        self.tflite_input_details = self.tflite_interpreter.get_input_details()
+        self.tflite_output_details = self.tflite_interpreter.get_output_details()
+        
+        input_shape = self.tflite_input_details[0]['shape']
+        input_dtype = self.tflite_input_details[0]['dtype']
+        output_shape = self.tflite_output_details[0]['shape']
+        
+        # Get model size
+        model_size = os.path.getsize(model_path)
+        
+        print(f"✓ Quantized model loaded from: {model_path}")
+        print(f"  - Input shape: {input_shape}")
+        print(f"  - Input dtype: {input_dtype}")
+        print(f"  - Output shape: {output_shape}")
+        print(f"  - Model size: {model_size / 1024:.2f} KB")
+        
+        self.quantized_model_path = model_path
+        return self.tflite_interpreter
+    
+    def predict_quantized(self, X):
+        """Run inference using the quantized TFLite model."""
+        if not hasattr(self, 'tflite_interpreter') or self.tflite_interpreter is None:
+            raise ValueError("No quantized model loaded. Load a TFLite model first.")
+        
+        input_details = self.tflite_input_details[0]
+        output_details = self.tflite_output_details[0]
+        
+        # Handle quantization parameters if using integer quantization
+        input_scale = input_details.get('quantization_parameters', {}).get('scales', [1.0])
+        input_zero_point = input_details.get('quantization_parameters', {}).get('zero_points', [0])
+        
+        predictions = []
+        
+        for i in range(len(X)):
+            sample = X[i:i+1].astype(np.float32)
+            
+            # Quantize input if needed
+            if input_details['dtype'] == np.int8:
+                if len(input_scale) > 0 and input_scale[0] != 0:
+                    sample = sample / input_scale[0] + input_zero_point[0]
+                sample = sample.astype(np.int8)
+            
+            self.tflite_interpreter.set_tensor(input_details['index'], sample)
+            self.tflite_interpreter.invoke()
+            output = self.tflite_interpreter.get_tensor(output_details['index'])
+            
+            # Dequantize output if needed
+            if output_details['dtype'] == np.int8:
+                output_scale = output_details.get('quantization_parameters', {}).get('scales', [1.0])
+                output_zero_point = output_details.get('quantization_parameters', {}).get('zero_points', [0])
+                if len(output_scale) > 0 and output_scale[0] != 0:
+                    output = (output.astype(np.float32) - output_zero_point[0]) * output_scale[0]
+            
+            predictions.append(output[0])
+        
+        return np.array(predictions)
+    
+    def has_quantized_model(self):
+        """Check if a quantized model is loaded."""
+        return hasattr(self, 'tflite_interpreter') and self.tflite_interpreter is not None
+    
     def calculate_flops(self, input_length=None, verbose=True):
         print("\n" + "="*70)
         print("FLOP Calculation for Single Inference")
@@ -403,17 +478,23 @@ class PiClassifier():
         print(f"Training samples: {len(X_train)}")
         print(f"Target present: {np.sum(y_train == 1)}, Target absent: {np.sum(y_train == 0)}")
         
-        validation_data = (X_val, y_val) if X_val is not None and y_val is not None else None
-        if validation_data:
+        # One-hot encode labels for binary crossentropy
+        y_train_onehot = keras.utils.to_categorical(y_train, num_classes=2)
+        
+        if X_val is not None and y_val is not None:
+            y_val_onehot = keras.utils.to_categorical(y_val, num_classes=2)
+            validation_data = (X_val, y_val_onehot)
             print(f"Validation samples: {len(X_val)}")
+        else:
+            validation_data = None
         
         optimizer = keras.optimizers.Adam(learning_rate=0.0001)
         self.model.compile(optimizer=optimizer,
-                           loss='sparse_categorical_crossentropy',
+                           loss='binary_crossentropy',
                            metrics=['accuracy'])
         
         history = self.model.fit(
-            X_train, y_train,
+            X_train, y_train_onehot,
             epochs=epochs,
             batch_size=batch_size,
             validation_data=validation_data,
@@ -432,7 +513,11 @@ class PiClassifier():
         print("="*70)
         
         print(f"Validation samples: {len(X_val)}")
-        val_loss, val_accuracy = self.model.evaluate(X_val, y_val, verbose=1)
+        
+        # Convert labels to one-hot encoding for binary_crossentropy
+        y_val_onehot = keras.utils.to_categorical(y_val, num_classes=2)
+        
+        val_loss, val_accuracy = self.model.evaluate(X_val, y_val_onehot, verbose=1)
         
         print(f"\nLoss: {val_loss:.4f}, Accuracy: {val_accuracy:.4f}")
         return val_loss, val_accuracy
@@ -443,7 +528,11 @@ class PiClassifier():
         print("="*70)
         
         print(f"Test samples: {len(X_test)}")
-        test_loss, test_accuracy = self.model.evaluate(X_test, y_test, verbose=1)
+        
+        # Convert labels to one-hot encoding for binary_crossentropy
+        y_test_onehot = keras.utils.to_categorical(y_test, num_classes=2)
+        
+        test_loss, test_accuracy = self.model.evaluate(X_test, y_test_onehot, verbose=1)
         
         print(f"\nLoss: {test_loss:.4f}, Accuracy: {test_accuracy:.4f}")
         return test_loss, test_accuracy
@@ -528,6 +617,49 @@ class PiClassifier():
     def plot_roc_multi_snr(self, logger, dataset_paths, snr_values):
         self.plotter.set_model(self.model)
         return self.plotter.plot_roc_multi_snr(self.model, logger, dataset_paths, snr_values)
+    
+    def plot_roc_multi_snr_noise(self, time, X_test, y_test, snr_values, late_time, use_quantized=False):
+        """
+        Plot ROC curves for multiple SNR values by adding noise in memory.
+        
+        Parameters:
+        -----------
+        time : np.ndarray
+            Time array for the decay curves
+        X_test : np.ndarray
+            Test data (decay curves reshaped for model input)
+        y_test : np.ndarray
+            Test labels
+        snr_values : list
+            List of SNR values in dB to test
+        late_time : float
+            Late time value for noise calculation
+        use_quantized : bool
+            Whether to use quantized (TFLite) model for inference
+        """
+        if use_quantized:
+            if not self.has_quantized_model():
+                raise ValueError("No quantized model loaded. Load a TFLite model first.")
+            tflite_predict_fn = self.predict_quantized
+            model = None
+        else:
+            if self.model is None:
+                raise ValueError("No Keras model loaded. Train or load a model first.")
+            tflite_predict_fn = None
+            model = self.model
+        
+        self.plotter.set_model(model)
+        return self.plotter.plot_roc_multi_snr_noise(
+            model=model,
+            time=time,
+            X_test=X_test,
+            y_test=y_test,
+            snr_values=snr_values,
+            late_time=late_time,
+            conditioner=self.conditioner,
+            use_quantized=use_quantized,
+            tflite_predict_fn=tflite_predict_fn
+        )
     
     def generate_model_summary_latex(self, input_length=None, output_file=None):
         if self.model is None:

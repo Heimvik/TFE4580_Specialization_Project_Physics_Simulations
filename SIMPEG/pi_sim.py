@@ -217,7 +217,7 @@ class PiSimulator:
         target_under_soil = target_z_range is not None and target_z_range[0] < 0
 
         waveform = tdem.sources.StepOffWaveform(off_time=self.cfg.waveform_off_time)
-        time_channels = np.linspace(0, 1024e-6, 1024)
+        time_channels = np.linspace(0, 1100e-6, 1100)
 
         loop_z_val = np.random.uniform(loop_z_range[0], loop_z_range[1])
         while loop_z_val < self.cfg.separation_z:
@@ -294,7 +294,7 @@ class PiSimulator:
         return time_channels, emf, label, simulation_metadata, plotting_metadata, model_params
 
 
-def run_simulations(simulator, logger, loop_z_range, target_z_range, 
+def run_unique_distance_to_target_simulations(simulator, logger, loop_z_range, target_z_range, 
                     num_target_present, num_target_absent, num_different_targets, probability_of_target_in_soil, output_file=None):    
     mesh = None
     total_sims = num_target_present + num_target_absent
@@ -309,7 +309,7 @@ def run_simulations(simulator, logger, loop_z_range, target_z_range,
     
     logger.initialize_hdf5(output_file, num_target_present, num_target_absent)
     
-    print(f"\n=== Running Simulations (Writing to {output_file}) ===")
+    print(f"\n=== Running Unique Distance Simulations (Writing to {output_file}) ===")
     
     print()
     
@@ -360,6 +360,256 @@ def run_simulations(simulator, logger, loop_z_range, target_z_range,
     
     print(f"\n Complete: {total_sims} simulations written to {output_file}")
     return output_file
+
+
+def run_equal_distance_to_target_simulations(simulator, logger, loop_z_range, equal_target_distance, 
+                                              num_simulations, num_different_targets=1, output_file=None):
+    """Run simulations where the target is always placed at a fixed distance below the loop.
+    
+    Args:
+        simulator: PiSimulator instance
+        logger: PiLogger instance
+        loop_z_range: Tuple (min, max) for random loop z position
+        equal_target_distance: Distance in meters to place target below loop (positive value)
+        num_simulations: Total number of simulations to run
+        num_different_targets: Number of different target types to randomly select from
+        output_file: Optional output file path
+    
+    The target is placed at (loop_z - equal_target_distance). If the target center is:
+        - Above z=0: marked as target_present=True
+        - Below z=0: marked as target_present=False (target absent / in soil)
+    """
+    mesh = None
+    sim_index = 0
+    
+    if output_file is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        folder_name = f"Simulation_{num_simulations}_EqualDist"
+        output_dir = os.path.join("Datasets", folder_name)
+        os.makedirs(output_dir, exist_ok=True)
+        output_file = os.path.join(output_dir, f"{timestamp}_N{num_simulations}_D{equal_target_distance:.2f}m.h5")
+    
+    # We'll count target present/absent after running simulations
+    # Initialize with placeholder values, will update in finalize
+    num_target_present = 0
+    num_target_absent = 0
+    
+    # Initialize HDF5 file with placeholder counts (will be updated at the end)
+    logger.initialize_hdf5(output_file, num_simulations, 0)
+    
+    print(f"\n=== Running Equal Distance Simulations (Writing to {output_file}) ===")
+    print(f"Target distance below loop: {equal_target_distance:.3f} m ({equal_target_distance*100:.1f} cm)")
+    
+    error_count = 0
+    target_present_count = 0
+    target_absent_count = 0
+    
+    for i in range(num_simulations):
+        # Random loop z position within range
+        loop_z_val = np.random.uniform(loop_z_range[0], loop_z_range[1])
+        while loop_z_val < simulator.cfg.separation_z:
+            loop_z_val = np.random.uniform(loop_z_range[0], loop_z_range[1])
+        
+        # Target is placed at fixed distance below loop
+        target_z_val = loop_z_val - equal_target_distance
+        
+        # Determine if target is present (center above ground) or absent (center below ground)
+        target_present = target_z_val >= 0
+        
+        # Random target type
+        target_type = np.random.randint(1, num_different_targets + 1)
+        
+        # Create target z range as single point (will be used by simulator)
+        target_z_range_single = [target_z_val, target_z_val]
+        
+        # Run simulation with specific target position
+        time, decay, label, metadata, plot_meta, model_params = simulator.run(
+            [loop_z_val, loop_z_val],  # Fixed loop position for this simulation
+            target_type, 
+            target_z_range_single, 
+            mesh=mesh
+        )
+        
+        if mesh is None and plot_meta is not None:
+            mesh = plot_meta['mesh']
+        if time is None and decay is None:
+            error_count += 1
+            continue
+        
+        # Override metadata with correct target_present status
+        metadata['target_present'] = target_present
+        if target_present:
+            metadata['label'] = f"Coil at {loop_z_val:.2f}, object at {target_z_val:.2f} (ABOVE ground)"
+            target_present_count += 1
+        else:
+            metadata['label'] = f"Coil at {loop_z_val:.2f}, object at {target_z_val:.2f} (BELOW ground)"
+            target_absent_count += 1
+        
+        logger.store_to_hdf5(output_file, sim_index, time, decay, metadata['label'], metadata, model_params)
+        sim_index += 1
+        
+        status = "Present" if target_present else "Absent"
+        print(f"\rSimulation {i+1}/{num_simulations} - Target {status} (z={target_z_val:.3f}m)", end='', flush=True)
+    
+    print()
+    print(f"\nSimulation Summary:")
+    print(f"  - Target Present (above ground): {target_present_count}")
+    print(f"  - Target Absent (below ground): {target_absent_count}")
+    print(f"  - Errors: {error_count}")
+    
+    # Update the HDF5 metadata with correct counts
+    logger.finalize_hdf5(output_file, len(time))
+    
+    # Update metadata with actual counts
+    with h5py.File(output_file, 'a') as f:
+        f['metadata'].attrs['num_target_present'] = target_present_count
+        f['metadata'].attrs['num_target_absent'] = target_absent_count
+        f['metadata'].attrs['num_simulations'] = target_present_count + target_absent_count
+        f['metadata'].attrs['equal_target_distance'] = equal_target_distance
+    
+    print(f"\n Complete: {sim_index} simulations written to {output_file}")
+    return output_file
+
+
+def run_specific_placement_simulations(simulator, logger, placements, num_different_targets=1, output_file=None):
+    """Run simulations with specific (coil_z, target_z) placement combinations.
+    
+    Args:
+        simulator: PiSimulator instance
+        logger: PiLogger instance
+        placements: List of tuples [(coil_z, target_z), ...] where target_z can be None for no target
+        num_different_targets: Number of different target types to randomly select from
+        output_file: Optional output file path
+    
+    Example placements: [(0.6, 0.1), (0.4, -0.1), (0.6, None)]
+        - (0.6, 0.1): coil at z=0.6m, target at z=0.1m (above ground, target present)
+        - (0.4, -0.1): coil at z=0.4m, target at z=-0.1m (below ground, target absent)
+        - (0.6, None): coil at z=0.6m, no target
+    """
+    mesh = None
+    sim_index = 0
+    num_simulations = len(placements)
+    
+    if output_file is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        folder_name = f"Simulation_{num_simulations}_SpecificPlacements"
+        output_dir = os.path.join("Datasets", folder_name)
+        os.makedirs(output_dir, exist_ok=True)
+        output_file = os.path.join(output_dir, f"{timestamp}_N{num_simulations}_specific.h5")
+    
+    # Initialize HDF5 file with placeholder counts (will be updated at the end)
+    logger.initialize_hdf5(output_file, num_simulations, 0)
+    
+    print(f"\n=== Running Specific Placement Simulations (Writing to {output_file}) ===")
+    print(f"Number of placements: {num_simulations}")
+    
+    error_count = 0
+    target_present_count = 0
+    target_absent_count = 0
+    
+    for i, (loop_z_val, target_z_val) in enumerate(placements):
+        # Determine target type and presence
+        if target_z_val is None:
+            # No target
+            target_type = 0
+            target_z_range = None
+            target_present = False
+            label = f"Coil at {loop_z_val:.3f}m, no target"
+        else:
+            # Target present - check if above or below ground
+            target_type = np.random.randint(1, num_different_targets + 1)
+            target_z_range = [target_z_val, target_z_val]
+            target_present = target_z_val >= 0
+            
+            if target_present:
+                label = f"Coil at {loop_z_val:.3f}m, target at {target_z_val:.3f}m (ABOVE ground)"
+            else:
+                label = f"Coil at {loop_z_val:.3f}m, target at {target_z_val:.3f}m (BELOW ground)"
+        
+        # Run simulation with specific positions
+        time, decay, _, metadata, plot_meta, model_params = simulator.run(
+            [loop_z_val, loop_z_val],  # Fixed loop position
+            target_type, 
+            target_z_range, 
+            mesh=mesh
+        )
+        
+        if mesh is None and plot_meta is not None:
+            mesh = plot_meta['mesh']
+        if time is None and decay is None:
+            error_count += 1
+            print(f"\rSimulation {i+1}/{num_simulations} - ERROR", end='', flush=True)
+            continue
+        
+        # Override metadata with correct values
+        metadata['target_present'] = target_present
+        metadata['label'] = label
+        
+        if target_present:
+            target_present_count += 1
+        else:
+            target_absent_count += 1
+        
+        logger.store_to_hdf5(output_file, sim_index, time, decay, label, metadata, model_params)
+        sim_index += 1
+        
+        status_str = "Present" if target_present else "Absent"
+        target_str = f"z={target_z_val:.3f}m" if target_z_val is not None else "None"
+        print(f"\rSimulation {i+1}/{num_simulations} - Coil: {loop_z_val:.3f}m, Target: {target_str} ({status_str})", end='', flush=True)
+    
+    print()
+    print(f"\nSimulation Summary:")
+    print(f"  - Target Present (above ground): {target_present_count}")
+    print(f"  - Target Absent (below ground or none): {target_absent_count}")
+    print(f"  - Errors: {error_count}")
+    
+    # Update the HDF5 metadata with correct counts
+    logger.finalize_hdf5(output_file, len(time))
+    
+    # Update metadata with actual counts
+    with h5py.File(output_file, 'a') as f:
+        f['metadata'].attrs['num_target_present'] = target_present_count
+        f['metadata'].attrs['num_target_absent'] = target_absent_count
+        f['metadata'].attrs['num_simulations'] = target_present_count + target_absent_count
+        f['metadata'].attrs['specific_placements'] = True
+    
+    print(f"\n Complete: {sim_index} simulations written to {output_file}")
+    return output_file
+
+
+def parse_placements(input_string):
+    """Parse placement string into list of (coil_z, target_z) tuples.
+    
+    Format: "(coil1,target1),(coil2,target2),..." where target can be '-' for no target.
+    Example: "(0.6,0.1),(0.4,-0.1),(0.6,-)" 
+        -> [(0.6, 0.1), (0.4, -0.1), (0.6, None)]
+    """
+    placements = []
+    
+    # Remove spaces and split by ),(
+    input_string = input_string.replace(' ', '')
+    
+    # Find all (x,y) patterns
+    import re
+    pattern = r'\(([^,]+),([^)]+)\)'
+    matches = re.findall(pattern, input_string)
+    
+    for coil_str, target_str in matches:
+        try:
+            coil_z = float(coil_str)
+            
+            if target_str == '-' or target_str.lower() == 'none':
+                target_z = None
+            else:
+                target_z = float(target_str)
+            
+            placements.append((coil_z, target_z))
+        except ValueError as e:
+            print(f"Warning: Could not parse placement ({coil_str},{target_str}): {e}")
+            continue
+    
+    return placements
+
 
 def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifier, conditioner, status):
     try:
@@ -632,8 +882,11 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                         representative_data = decay_curves.reshape(decay_curves.shape[0], decay_curves.shape[1], 1)
                         print(f"Using {len(representative_data)} samples from test set")
                 
-                # Ask for output path
-                default_name = f"quantized_model_{datetime.now().strftime('%Y%m%d_%H%M%S')}.tflite"
+                # Generate unique name based on model properties
+                input_len = classifier.model.input_shape[1]
+                num_params = classifier.model.count_params()
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                default_name = f"quantized_in{input_len}_p{num_params}_{timestamp}.tflite"
                 output_name = input(f"Quantized model filename [{default_name}]: ").strip() or default_name
                 if not output_name.endswith('.tflite'):
                     output_name += '.tflite'
@@ -656,17 +909,17 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
         elif choice == '9':
             # Classification plots
             try:
-                if classifier.model is None:
+                if classifier.model is None and not classifier.has_quantized_model():
                     print("\nNo model loaded. Train a model first (option 5) or load one (option 11).")
                     continue
                 
                 test_path = logger.get_split_path(hdf5_file, 'test')
                 if not test_path:
-                    print(f"\nNo test split found. Please split the dataset first (option 3).")
+                    print(f"\nNo test split found. Please split the dataset first (option 4).")
                     continue
                 
                 print(f"Loading test data: {os.path.basename(test_path)}")
-                _, decay_curves, labels, _, _ = logger.load_from_hdf5(test_path)
+                time_data, decay_curves, labels, _, _ = logger.load_from_hdf5(test_path)
                 X_test = decay_curves.reshape(decay_curves.shape[0], decay_curves.shape[1], 1)
                 y_test = labels
                 
@@ -675,13 +928,20 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                     print(f"\n{'='*70}")
                     print("Classification Plots")
                     print(f"{'='*70}")
+                    
+                    if classifier.model is not None:
+                        print(f"Keras model loaded: {classifier.model.name}")
+                    if classifier.has_quantized_model():
+                        print(f"Quantized model loaded: {os.path.basename(classifier.quantized_model_path)}")
+                    
                     print("\nAvailable plots:")
                     print("  [1] Confusion Matrix")
                     print("  [2] Normalized Confusion Matrix")
                     print("  [3] ROC Curve (standard)")
                     print("  [4] ROC Curve (Pd vs Pfa - detection theory)")
                     print("  [5] Prediction Distribution")
-                    print("  [6] All Classification Plots")
+                    print("  [6] Multi-SNR ROC Analysis (add noise in memory)")
+                    print("  [7] All Classification Plots")
                     print("  [b] Back")
                     
                     plot_choice = input("\nSelect plot: ").strip().lower()
@@ -699,6 +959,48 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                     elif plot_choice == '5':
                         classifier.plot_prediction_distribution(X_test, y_test)
                     elif plot_choice == '6':
+                        # Multi-SNR ROC with in-memory noise addition
+                        print("\n" + "-"*50)
+                        print("Multi-SNR ROC Analysis")
+                        print("-"*50)
+                        
+                        # Ask for SNR values
+                        default_snrs = "0, 5, 10, 15, 20"
+                        snr_input = input(f"Enter SNR values in dB (comma-separated) [{default_snrs}]: ").strip()
+                        snr_input = snr_input if snr_input else default_snrs
+                        try:
+                            snr_values = [float(s.strip()) for s in snr_input.split(',')]
+                        except ValueError:
+                            print("Invalid SNR values. Using defaults.")
+                            snr_values = [0, 5, 10, 15, 20]
+                        
+                        # Ask for late time
+                        default_late_time = 1e-4
+                        late_time_input = input(f"Enter late time for noise calculation [{default_late_time}]: ").strip()
+                        try:
+                            late_time = float(late_time_input) if late_time_input else default_late_time
+                        except ValueError:
+                            late_time = default_late_time
+                        
+                        # Ask whether to use quantized model
+                        use_quantized = False
+                        if classifier.has_quantized_model():
+                            use_q = input("Use quantized model for inference? (y/n) [n]: ").strip().lower()
+                            use_quantized = (use_q == 'y')
+                        
+                        print(f"\nSNR values: {snr_values} dB")
+                        print(f"Late time: {late_time}")
+                        print(f"Using quantized model: {use_quantized}")
+                        
+                        classifier.plot_roc_multi_snr_noise(
+                            time=time_data,
+                            X_test=X_test,
+                            y_test=y_test,
+                            snr_values=snr_values,
+                            late_time=late_time,
+                            use_quantized=use_quantized
+                        )
+                    elif plot_choice == '7':
                         print("\nGenerating all classification plots...")
                         classifier.plot_confusion_matrix(X_test, y_test, normalize=False)
                         classifier.plot_confusion_matrix(X_test, y_test, normalize=True)
@@ -829,15 +1131,21 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                     print(f"{'='*70}")
                     
                     if classifier.model is not None:
-                        print(f"Current model: {classifier.model.name}")
+                        print(f"Current Keras model: {classifier.model.name}")
                         print(f"Parameters: {classifier.model.count_params():,}")
                     else:
-                        print("No model loaded.")
+                        print("No Keras model loaded.")
+                    
+                    if classifier.has_quantized_model():
+                        print(f"Quantized model loaded: {os.path.basename(classifier.quantized_model_path)}")
+                    else:
+                        print("No quantized model loaded.")
                     
                     print("\nOptions:")
-                    print("  [1] Save current model")
-                    print("  [2] Load model from file")
-                    print("  [3] List available models")
+                    print("  [1] Save current model (.keras)")
+                    print("  [2] Load Keras model (.keras)")
+                    print("  [3] Load quantized model (.tflite)")
+                    print("  [4] List available models")
                     print("  [b] Back")
                     
                     model_choice = input("\nSelect option: ").strip().lower()
@@ -847,7 +1155,11 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                             print("\nNo model to save. Train or build a model first.")
                             continue
                         
-                        default_name = f"model_{datetime.now().strftime('%Y%m%d_%H%M%S')}.keras"
+                        # Generate unique name based on model properties
+                        input_len = classifier.model.input_shape[1]
+                        num_params = classifier.model.count_params()
+                        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                        default_name = f"model_in{input_len}_p{num_params}_{timestamp}.keras"
                         model_name = input(f"Model filename [{default_name}]: ").strip() or default_name
                         
                         if not model_name.endswith('.keras'):
@@ -862,9 +1174,11 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                         keras_files = [f for f in os.listdir(model_dir) if f.endswith('.keras')]
                         
                         if keras_files:
-                            print("\nAvailable models:")
+                            print("\nAvailable Keras models:")
                             for i, f in enumerate(keras_files):
-                                print(f"  [{i+1}] {f}")
+                                full_path = os.path.join(model_dir, f)
+                                size_mb = os.path.getsize(full_path) / (1024 * 1024)
+                                print(f"  [{i+1}] {f} ({size_mb:.2f} MB)")
                             print(f"  [m] Enter path manually")
                             
                             selection = input("\nSelect model: ").strip().lower()
@@ -892,17 +1206,67 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                             print(f"File not found: {model_path}")
                     
                     elif model_choice == '3':
+                        # Find .tflite files
+                        model_dir = os.path.dirname(hdf5_file)
+                        tflite_files = [f for f in os.listdir(model_dir) if f.endswith('.tflite')]
+                        
+                        if tflite_files:
+                            print("\nAvailable quantized models:")
+                            for i, f in enumerate(tflite_files):
+                                full_path = os.path.join(model_dir, f)
+                                size_kb = os.path.getsize(full_path) / 1024
+                                print(f"  [{i+1}] {f} ({size_kb:.2f} KB)")
+                            print(f"  [m] Enter path manually")
+                            
+                            selection = input("\nSelect model: ").strip().lower()
+                            
+                            if selection == 'm':
+                                model_path = input("Enter model path: ").strip()
+                            else:
+                                try:
+                                    idx = int(selection) - 1
+                                    if 0 <= idx < len(tflite_files):
+                                        model_path = os.path.join(model_dir, tflite_files[idx])
+                                    else:
+                                        print("Invalid selection.")
+                                        continue
+                                except ValueError:
+                                    print("Invalid selection.")
+                                    continue
+                        else:
+                            model_path = input("Enter model path: ").strip()
+                        
+                        if os.path.exists(model_path):
+                            classifier.load_quantized_model(model_path)
+                        else:
+                            print(f"File not found: {model_path}")
+                    
+                    elif model_choice == '4':
                         model_dir = os.path.dirname(hdf5_file)
                         keras_files = [f for f in os.listdir(model_dir) if f.endswith('.keras')]
+                        tflite_files = [f for f in os.listdir(model_dir) if f.endswith('.tflite')]
                         
+                        print("\n" + "-"*50)
+                        print("Keras Models (.keras):")
+                        print("-"*50)
                         if keras_files:
-                            print("\nAvailable models:")
                             for f in keras_files:
                                 full_path = os.path.join(model_dir, f)
                                 size_mb = os.path.getsize(full_path) / (1024 * 1024)
                                 print(f"  - {f} ({size_mb:.2f} MB)")
                         else:
-                            print("\nNo .keras files found in dataset directory.")
+                            print("  No .keras files found.")
+                        
+                        print("\n" + "-"*50)
+                        print("Quantized Models (.tflite):")
+                        print("-"*50)
+                        if tflite_files:
+                            for f in tflite_files:
+                                full_path = os.path.join(model_dir, f)
+                                size_kb = os.path.getsize(full_path) / 1024
+                                print(f"  - {f} ({size_kb:.2f} KB)")
+                        else:
+                            print("  No .tflite files found.")
                     
                     elif model_choice == 'b':
                         break
@@ -940,16 +1304,18 @@ if __name__ == "__main__":
         print("TDEM Simulation System - Main Menu")
         print("="*70)
         print("\nOptions:")
-        print("  1. Generate new dataset")
-        print("  2. Load existing dataset")
+        print("  1. Generate new dataset (unique target distances)")
+        print("  2. Generate new dataset (equal target distance)")
+        print("  3. Generate new dataset (specific placements)")
+        print("  4. Load existing dataset")
         print("  [q] Quit")
         
         choice = input("\nSelect option: ").strip().lower()
         
         if choice == '1':
-            # Generate new dataset
+            # Generate new dataset with unique distances
             print("\n" + "="*70)
-            print("Generate New Dataset")
+            print("Generate New Dataset - Unique Target Distances")
             print("="*70)
             
             print("\nDataset Type:")
@@ -976,7 +1342,7 @@ if __name__ == "__main__":
                 num_tp = 3
                 num_ta = 1
             
-            hdf5_path = run_simulations(
+            hdf5_path = run_unique_distance_to_target_simulations(
                 simulator, logger,
                 loop_z_range=cfg.loop_z_range,
                 target_z_range=cfg.target_z_range,
@@ -990,6 +1356,82 @@ if __name__ == "__main__":
             dataset_operations_menu(hdf5_path, cfg, simulator, logger, plotter, classifier, conditioner, status)
         
         elif choice == '2':
+            # Generate new dataset with equal distance
+            print("\n" + "="*70)
+            print("Generate New Dataset - Equal Target Distance")
+            print("="*70)
+            print("\nIn this mode, the target is always placed at a fixed distance below the loop.")
+            print("Target present/absent is determined by whether target center is above/below ground (z=0).")
+            
+            try:
+                num_sims = int(input("\nNumber of simulations [100]: ").strip() or "100")
+                equal_dist_cm = float(input("Target distance below loop (cm) [5.0]: ").strip() or "5.0")
+                equal_dist_m = equal_dist_cm / 100.0  # Convert cm to meters
+            except ValueError:
+                print("Invalid input, using defaults (100 simulations, 5 cm distance)")
+                num_sims = 100
+                equal_dist_m = 0.05
+            
+            print(f"\nLoop z range: {cfg.loop_z_range[0]:.2f} to {cfg.loop_z_range[1]:.2f} m")
+            print(f"Target will be placed {equal_dist_cm:.1f} cm below loop for each simulation")
+            
+            hdf5_path = run_equal_distance_to_target_simulations(
+                simulator, logger,
+                loop_z_range=cfg.loop_z_range,
+                equal_target_distance=equal_dist_m,
+                num_simulations=num_sims,
+                num_different_targets=1,
+            )
+            
+            # Go to dataset operations menu
+            dataset_operations_menu(hdf5_path, cfg, simulator, logger, plotter, classifier, conditioner, status)
+        
+        elif choice == '3':
+            # Generate new dataset with specific placements
+            print("\n" + "="*70)
+            print("Generate New Dataset - Specific Placements")
+            print("="*70)
+            print("\nIn this mode, you specify exact (coil_z, target_z) combinations.")
+            print("Use '-' for no target.")
+            print("\nFormat: (coil1,target1),(coil2,target2),...")
+            print("Example: (0.6,0.1),(0.4,-0.1),(0.6,-)")
+            print("  - (0.6,0.1)  : coil at z=0.6m, target at z=0.1m (above ground)")
+            print("  - (0.4,-0.1) : coil at z=0.4m, target at z=-0.1m (below ground)")
+            print("  - (0.6,-)    : coil at z=0.6m, no target")
+            
+            placement_input = input("\nEnter placements: ").strip()
+            
+            if not placement_input:
+                print("No placements entered. Operation cancelled.")
+                continue
+            
+            placements = parse_placements(placement_input)
+            
+            if not placements:
+                print("Could not parse any valid placements. Operation cancelled.")
+                continue
+            
+            print(f"\nParsed {len(placements)} placements:")
+            for i, (coil_z, target_z) in enumerate(placements):
+                target_str = f"{target_z:.3f}m" if target_z is not None else "None"
+                status_str = "(present)" if target_z is not None and target_z >= 0 else "(absent)"
+                print(f"  [{i+1}] Coil: {coil_z:.3f}m, Target: {target_str} {status_str}")
+            
+            confirm = input("\nProceed with these placements? (y/n) [y]: ").strip().lower() or 'y'
+            if confirm != 'y':
+                print("Operation cancelled.")
+                continue
+            
+            hdf5_path = run_specific_placement_simulations(
+                simulator, logger,
+                placements=placements,
+                num_different_targets=1,
+            )
+            
+            # Go to dataset operations menu
+            dataset_operations_menu(hdf5_path, cfg, simulator, logger, plotter, classifier, conditioner, status)
+        
+        elif choice == '4':
             # Load existing dataset
             hdf5_file = logger.select_hdf5_file()
             
