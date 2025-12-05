@@ -4,12 +4,55 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import FancyBboxPatch, FancyArrowPatch
 from matplotlib.patches import ArrowStyle
 import matplotlib.patches as mpatches
+import matplotlib.scale as mscale
+import matplotlib.transforms as mtransforms
+from matplotlib.ticker import FixedLocator, NullLocator, ScalarFormatter
 from simpeg import maps
 from discretize import CylindricalMesh
 import h5py
 from sklearn.metrics import roc_curve, auc
 
 
+class LogitTransform(mtransforms.Transform):
+    input_dims = output_dims = 1
+
+    def transform_non_affine(self, a):
+        a = np.clip(a, 1e-5, 1-1e-5)
+        return np.log(a / (1 - a))
+
+    def inverted(self):
+        return InvertedLogitTransform()
+
+
+class InvertedLogitTransform(mtransforms.Transform):
+    input_dims = output_dims = 1
+
+    def transform_non_affine(self, a):
+        return 1 / (1 + np.exp(-a))
+
+    def inverted(self):
+        return LogitTransform()
+
+
+class LogitScale(mscale.ScaleBase):
+    name = 'logit_custom'
+
+    def __init__(self, axis, **kwargs):
+        super().__init__(axis)
+
+    def get_transform(self):
+        return LogitTransform()
+
+    def set_default_locators_and_formatters(self, axis):
+        axis.set_major_locator(FixedLocator([0.001, 0.01, 0.1, 0.5, 0.9, 0.99, 0.999]))
+        axis.set_minor_locator(NullLocator())
+        axis.set_major_formatter(ScalarFormatter())
+
+    def limit_range_for_scale(self, vmin, vmax, minpos):
+        return max(vmin, 1e-5), min(vmax, 1-1e-5)
+
+
+mscale.register_scale(LogitScale)
 
 class BasePlotter:
     def __init__(self):
@@ -427,7 +470,7 @@ class ClassifierPlotter(BasePlotter):
             title = 'Confusion Matrix'
         
         fig, ax = plt.subplots(figsize=(8, 6))
-        sns.heatmap(cm, annot=True, fmt=fmt, cmap='Blues', square=True,
+        sns.heatmap(cm, annot=True, fmt=fmt, cmap='Greys', square=True,
                xticklabels=['$C_A$', '$C_P$'],
                yticklabels=['$C_A$', '$C_P$'],
                cbar_kws={'label': 'Count' if not normalize else 'Proportion'},
@@ -435,8 +478,8 @@ class ClassifierPlotter(BasePlotter):
         ax.tick_params(axis='x', labelsize=20)
         ax.tick_params(axis='y', labelsize=20)
         
-        ax.set_ylabel('True class', fontsize=20)
-        ax.set_xlabel('Predicted class', fontsize=20)
+        ax.set_xlabel('True class', fontsize=20)
+        ax.set_ylabel('Predicted class', fontsize=20)
         
         plt.tight_layout()
         plt.show()
@@ -510,16 +553,69 @@ class ClassifierPlotter(BasePlotter):
         ax1.grid(True, alpha=0.3)
         ax1.tick_params(labelsize=20)
         
+        ax2.set_yscale('logit_custom')
         data_to_plot = [target_absent_probs, target_present_probs]
-        bp = ax2.boxplot(data_to_plot, labels=['$C_A$', '$C_P$'],
-                patch_artist=True, showmeans=True)
-        ax2.set_xticklabels(ax2.get_xticklabels(), fontsize=20)
-        bp['boxes'][0].set_facecolor('blue')
-        bp['boxes'][1].set_facecolor('green')
+        
+        positions = [1, 2]
+        # Colors: C_A = #FF0000 (red), C_P = #007FFF (azure blue)
+        colors_dist = ['blue','orange']
+        
+        # First plot jittered scatter points with high transparency
+        for i, (data, pos, color) in enumerate(zip(data_to_plot, positions, colors_dist)):
+            if len(data) == 0:
+                continue
+            jitter = np.random.normal(0, 0.12, len(data))
+            x_pos = np.full(len(data), pos) + jitter
+            if color == 'orange':
+                alpha_val = 0.15
+            else:
+                alpha_val = 0.1
+            ax2.scatter(x_pos, data, marker='o', color=color, alpha=alpha_val, s=20, zorder=1)
+        
+        # Create box and whisker plot - unfilled boxes with black outlines
+        bp = ax2.boxplot(data_to_plot, positions=positions, widths=0.3, 
+                        patch_artist=True, showfliers=False, zorder=2,
+                        showmeans=True, meanprops=dict(marker='D', markerfacecolor='black', 
+                                                        markeredgecolor='black', markersize=10))
+        
+        # Style the boxplot - transparent boxes with black edges
+        for patch in bp['boxes']:
+            patch.set_facecolor('none')  # Transparent fill
+            patch.set_edgecolor('gray')
+            patch.set_linewidth(2)
+        
+        for whisker in bp['whiskers']:
+            whisker.set_color('gray')
+            whisker.set_linewidth(2)
+            whisker.set_linestyle('-')
+        
+        for cap in bp['caps']:
+            cap.set_color('gray')
+            cap.set_linewidth(2)
+        
+        for median in bp['medians']:
+            median.set_color('black')
+            median.set_linewidth(3)
+        
+        ax2.set_xlim(0.5, 2.5)
+        ax2.set_xticks(positions)
+        ax2.set_xticklabels(['$C_A$', '$C_P$'], fontsize=20)
         ax2.axhline(0.5, color='red', linestyle='--', linewidth=2, label='Decision threshold')
         ax2.set_ylabel('Predicted probability ($C_P$)', fontsize=20)
-        ax2.legend(fontsize=20)
-        ax2.grid(True, alpha=0.3, axis='y')
+        ax2.set_xlabel('True class', fontsize=20)
+
+        ax2.set_ylim(1e-5, 1-1e-5)
+        
+        # Custom legend
+        from matplotlib.lines import Line2D
+        legend_elements = [
+            Line2D([0], [0], marker='D', color='w', markerfacecolor='black', markersize=8, label='Mean'),
+            Line2D([0], [0], linestyle='-', color='black', linewidth=3, label='Median'),
+            Line2D([0], [0], color='red', linestyle='--', linewidth=2, label='Decision threshold')
+        ]
+        ax2.legend(handles=legend_elements, fontsize=16, loc='upper left')
+        
+        ax2.grid(True, alpha=0.3, which='both')
         ax2.tick_params(labelsize=20)
         
         plt.tight_layout()
@@ -963,32 +1059,6 @@ class ClassifierPlotter(BasePlotter):
     
     def plot_roc_multi_snr_noise(self, model, time, X_test, y_test, snr_values, late_time, 
                                   conditioner=None, use_quantized=False, tflite_predict_fn=None):
-        """
-        Plot ROC curves for multiple SNR values by adding noise to test data in memory.
-        
-        Parameters:
-        -----------
-        model : Keras model or None
-            The trained Keras model (if not using quantized)
-        time : np.ndarray
-            Time array for the decay curves
-        X_test : np.ndarray
-            Test data (decay curves reshaped for model input)
-        y_test : np.ndarray
-            Test labels
-        snr_values : list
-            List of SNR values in dB to test
-        late_time : float
-            Late time value for noise calculation (defines signal region)
-        conditioner : PiConditioner, optional
-            Conditioner object with add_noise method
-        use_quantized : bool
-            Whether to use quantized (TFLite) model for inference
-        tflite_predict_fn : callable, optional
-            Function to run TFLite inference (required if use_quantized=True)
-        """
-        from sklearn.metrics import roc_curve, auc
-        
         if model is None and not use_quantized:
             print("Error: No model provided!")
             return None
@@ -1004,36 +1074,55 @@ class ClassifierPlotter(BasePlotter):
         print(f"SNR values: {snr_values} dB")
         print(f"Using quantized model: {use_quantized}")
         
-        fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+        fig, ax = plt.subplots(figsize=(10, 8))
         
         colors = plt.cm.viridis(np.linspace(0, 1, len(snr_values)))
         results = {}
         
-        # Get original decay curves (remove channel dimension if present)
         if X_test.ndim == 3:
             decay_curves_orig = X_test.squeeze(axis=-1)  # Remove channel dim
         else:
             decay_curves_orig = X_test
         
+        # First, process the original (no noise) case
+        print(f"\nProcessing Original (no noise)...")
+        
+        X_noisy = decay_curves_orig.reshape(len(decay_curves_orig), -1, 1)
+        
+        # Get predictions
+        if use_quantized:
+            y_pred_proba = tflite_predict_fn(X_noisy)
+        else:
+            y_pred_proba = model.predict(X_noisy, verbose=0)
+        
+        # Get probability of target being present (class 1)
+        if y_pred_proba.ndim > 1 and y_pred_proba.shape[1] > 1:
+            y_pred_proba_target = y_pred_proba[:, 1]
+        else:
+            y_pred_proba_target = y_pred_proba.flatten()
+        
+        # Calculate ROC curve
+        pfa, pd, thresholds = roc_curve(y_test, y_pred_proba_target)
+        roc_auc = auc(pfa, pd)
+        
+        results['original'] = {
+            'pfa': pfa,
+            'pd': pd,
+            'thresholds': thresholds,
+            'auc': roc_auc
+        }
+        
+        print(f"  AUC = {roc_auc:.4f}")
+        
+        # Plot the original
+        ax.plot(pfa, pd, color='black', lw=3, 
+                label=f'No noise (AUC = {roc_auc:.3f})')
+        
         for i, (snr, color) in enumerate(zip(snr_values, colors)):
             print(f"\nProcessing SNR = {snr} dB...")
             
-            # Add noise to each sample in memory
-            if conditioner is not None:
-                decay_curves_noisy = np.zeros_like(decay_curves_orig)
-                for j in range(len(decay_curves_orig)):
-                    decay_curves_noisy[j] = conditioner.add_noise(
-                        time, decay_curves_orig[j], late_time, snr
-                    )
-            else:
-                # Simple noise addition if no conditioner provided
-                signal_power = np.mean(decay_curves_orig**2, axis=1, keepdims=True)
-                snr_linear = 10**(snr / 10)
-                noise_power = signal_power / snr_linear
-                noise_std = np.sqrt(noise_power)
-                noise = np.random.normal(0, 1, decay_curves_orig.shape) * noise_std
-                decay_curves_noisy = decay_curves_orig + noise
-            
+            decay_curves_noisy = conditioner.add_noise(time, decay_curves_orig, late_time, snr)
+        
             # Reshape for model input (add channel dimension)
             X_noisy = decay_curves_noisy.reshape(len(decay_curves_noisy), -1, 1)
             
@@ -1063,32 +1152,18 @@ class ClassifierPlotter(BasePlotter):
             print(f"  AUC = {roc_auc:.4f}")
             
             # Plot on linear scale
-            axes[0].plot(pfa, pd, color=color, lw=2, 
+            ax.plot(pfa, pd, color=color, lw=2, 
                         label=f'SNR = {snr} dB (AUC = {roc_auc:.3f})')
-            
-            # Plot on log scale
-            valid_mask = pfa > 0
-            axes[1].semilogx(pfa[valid_mask], pd[valid_mask], color=color, lw=2,
-                           label=f'SNR = {snr} dB')
         
         # Configure linear scale plot
-        axes[0].plot([0, 1], [0, 1], 'k--', lw=1, label='Random')
-        axes[0].set_xlabel('Probability of False Alarm (Pfa)', fontsize=20)
-        axes[0].set_ylabel('Probability of Detection (Pd)', fontsize=20)
-        axes[0].legend(loc='lower right', fontsize=20)
-        axes[0].grid(True, alpha=0.3)
-        axes[0].set_xlim([0, 1])
-        axes[0].set_ylim([0, 1.05])
-        axes[0].tick_params(labelsize=20)
-        
-        # Configure log scale plot
-        axes[1].set_xlabel('Probability of False Alarm (Pfa) - Log Scale', fontsize=20)
-        axes[1].set_ylabel('Probability of Detection (Pd)', fontsize=20)
-        axes[1].legend(loc='lower right', fontsize=20)
-        axes[1].grid(True, alpha=0.3, which='both')
-        axes[1].set_xlim([1e-4, 1])
-        axes[1].set_ylim([0, 1.05])
-        axes[1].tick_params(labelsize=20)
+        ax.plot([0, 1], [0, 1], 'k--', lw=1, label='Random')
+        ax.set_xlabel('Probability of false alarm ($P_{FA}$)', fontsize=20)
+        ax.set_ylabel('Probability of detection ($P_{D}$)', fontsize=20)
+        ax.legend(loc='lower right', fontsize=20)
+        ax.grid(True, alpha=0.3)
+        ax.set_xlim([0, 1])
+        ax.set_ylim([0, 1.05])
+        ax.tick_params(labelsize=20)
         
         plt.tight_layout()
         plt.show()
@@ -1099,7 +1174,397 @@ class ClassifierPlotter(BasePlotter):
         print("="*70)
         print(f"{'SNR (dB)':<12} {'AUC':<10}")
         print("-"*22)
+        if 'original' in results:
+            print(f"{'Original':<12} {results['original']['auc']:.4f}")
         for snr in snr_values:
             print(f"{snr:<12} {results[snr]['auc']:.4f}")
+        
+        return results
+
+    def plot_multi_snr_confusion_and_distribution(self, model, time, X_test, y_test, snr_values, late_time,
+                                                   conditioner=None, use_quantized=False, tflite_predict_fn=None):
+        """
+        Plot confusion matrices and prediction distributions for multiple SNR values.
+        """
+        from sklearn.metrics import confusion_matrix
+        import seaborn as sns
+        
+        if model is None and not use_quantized:
+            print("Error: No model provided!")
+            return None
+        
+        if use_quantized and tflite_predict_fn is None:
+            print("Error: TFLite predict function required for quantized model!")
+            return None
+        
+        print("\n" + "="*70)
+        print("Multi-SNR Confusion Matrix and Prediction Distribution")
+        print("="*70)
+        print(f"Test samples: {len(X_test)}")
+        print(f"SNR values: {snr_values} dB")
+        print(f"Using quantized model: {use_quantized}")
+        
+        if X_test.ndim == 3:
+            decay_curves_orig = X_test.squeeze(axis=-1)
+        else:
+            decay_curves_orig = X_test
+        
+        # Include 'Original' (no noise) plus all SNR values
+        all_snr_labels = ['Original'] + [f'{snr} dB' for snr in snr_values]
+        n_plots = len(all_snr_labels)
+        
+        # Create figure for confusion matrices
+        n_cols = min(4, n_plots)
+        n_rows = (n_plots + n_cols - 1) // n_cols
+        fig_cm, axes_cm = plt.subplots(n_rows, n_cols, figsize=(4*n_cols, 4*n_rows))
+        if n_plots == 1:
+            axes_cm = np.array([[axes_cm]])
+        elif n_rows == 1:
+            axes_cm = axes_cm.reshape(1, -1)
+        elif n_cols == 1:
+            axes_cm = axes_cm.reshape(-1, 1)
+        
+        # Create figure for prediction distributions
+        fig_dist, axes_dist = plt.subplots(n_rows, n_cols, figsize=(4*n_cols, 4*n_rows))
+        if n_plots == 1:
+            axes_dist = np.array([[axes_dist]])
+        elif n_rows == 1:
+            axes_dist = axes_dist.reshape(1, -1)
+        elif n_cols == 1:
+            axes_dist = axes_dist.reshape(-1, 1)
+        
+        results = {}
+        
+        # Process Original (no noise) first
+        print(f"\nProcessing Original (no noise)...")
+        X_input = decay_curves_orig.reshape(len(decay_curves_orig), -1, 1)
+        
+        if use_quantized:
+            y_pred_proba = tflite_predict_fn(X_input)
+        else:
+            y_pred_proba = model.predict(X_input, verbose=0)
+        
+        if y_pred_proba.ndim > 1 and y_pred_proba.shape[1] > 1:
+            y_pred_proba_target = y_pred_proba[:, 1]
+        else:
+            y_pred_proba_target = y_pred_proba.flatten()
+        
+        y_pred = (y_pred_proba_target >= 0.5).astype(int)
+        accuracy = np.mean(y_pred == y_test)
+        results['original'] = {'accuracy': accuracy, 'y_pred_proba': y_pred_proba_target}
+        print(f"  Accuracy = {accuracy:.4f}")
+        
+        # Plot confusion matrix for Original
+        row, col = 0, 0
+        cm = confusion_matrix(y_test, y_pred)
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Greys', square=True,
+                   xticklabels=['$C_A$', '$C_P$'], yticklabels=['$C_A$', '$C_P$'],
+                   ax=axes_cm[row, col], annot_kws={'size': 12}, cbar=False)
+        axes_cm[row, col].set_title(f'Original\nAcc={accuracy:.3f}', fontsize=12)
+        axes_cm[row, col].set_xlabel('True', fontsize=10)
+        axes_cm[row, col].set_ylabel('Predicted', fontsize=10)
+        
+        # Plot prediction distribution for Original
+        target_present_probs = y_pred_proba_target[y_test == 1]
+        target_absent_probs = y_pred_proba_target[y_test == 0]
+        axes_dist[row, col].hist(target_present_probs, bins=20, alpha=0.6, color='green', label='$C_P$', edgecolor='black')
+        axes_dist[row, col].hist(target_absent_probs, bins=20, alpha=0.6, color='blue', label='$C_A$', edgecolor='black')
+        axes_dist[row, col].axvline(0.5, color='red', linestyle='--', linewidth=2)
+        axes_dist[row, col].set_title(f'Original\nAcc={accuracy:.3f}', fontsize=12)
+        axes_dist[row, col].set_xlabel('$P(C_P)$', fontsize=10)
+        axes_dist[row, col].set_ylabel('Frequency', fontsize=10)
+        axes_dist[row, col].legend(fontsize=8)
+        
+        # Process each SNR value
+        for i, snr in enumerate(snr_values):
+            print(f"\nProcessing SNR = {snr} dB...")
+            
+            decay_curves_noisy = conditioner.add_noise(time, decay_curves_orig, late_time, snr)
+            X_noisy = decay_curves_noisy.reshape(len(decay_curves_noisy), -1, 1)
+            
+            if use_quantized:
+                y_pred_proba = tflite_predict_fn(X_noisy)
+            else:
+                y_pred_proba = model.predict(X_noisy, verbose=0)
+            
+            if y_pred_proba.ndim > 1 and y_pred_proba.shape[1] > 1:
+                y_pred_proba_target = y_pred_proba[:, 1]
+            else:
+                y_pred_proba_target = y_pred_proba.flatten()
+            
+            y_pred = (y_pred_proba_target >= 0.5).astype(int)
+            accuracy = np.mean(y_pred == y_test)
+            results[snr] = {'accuracy': accuracy, 'y_pred_proba': y_pred_proba_target}
+            print(f"  Accuracy = {accuracy:.4f}")
+            
+            # Plot confusion matrix
+            plot_idx = i + 1
+            row = plot_idx // n_cols
+            col = plot_idx % n_cols
+            cm = confusion_matrix(y_test, y_pred)
+            sns.heatmap(cm, annot=True, fmt='d', cmap='Greys', square=True,
+                       xticklabels=['$C_A$', '$C_P$'], yticklabels=['$C_A$', '$C_P$'],
+                       ax=axes_cm[row, col], annot_kws={'size': 12}, cbar=False)
+            axes_cm[row, col].set_title(f'SNR={snr} dB\nAcc={accuracy:.3f}', fontsize=12)
+            axes_cm[row, col].set_xlabel('True', fontsize=10)
+            axes_cm[row, col].set_ylabel('Predicted', fontsize=10)
+            
+            # Plot prediction distribution
+            target_present_probs = y_pred_proba_target[y_test == 1]
+            target_absent_probs = y_pred_proba_target[y_test == 0]
+            axes_dist[row, col].hist(target_present_probs, bins=20, alpha=0.6, color='green', label='$C_P$', edgecolor='black')
+            axes_dist[row, col].hist(target_absent_probs, bins=20, alpha=0.6, color='blue', label='$C_A$', edgecolor='black')
+            axes_dist[row, col].axvline(0.5, color='red', linestyle='--', linewidth=2)
+            axes_dist[row, col].set_title(f'SNR={snr} dB\nAcc={accuracy:.3f}', fontsize=12)
+            axes_dist[row, col].set_xlabel('$P(C_P)$', fontsize=10)
+            axes_dist[row, col].set_ylabel('Frequency', fontsize=10)
+            axes_dist[row, col].legend(fontsize=8)
+        
+        # Hide unused subplots
+        for idx in range(n_plots, n_rows * n_cols):
+            row = idx // n_cols
+            col = idx % n_cols
+            axes_cm[row, col].axis('off')
+            axes_dist[row, col].axis('off')
+        
+        fig_cm.suptitle('Confusion Matrices at Different SNR Levels', fontsize=14, fontweight='bold')
+        fig_cm.tight_layout()
+        fig_cm.show()
+        
+        fig_dist.suptitle('Prediction Distributions at Different SNR Levels', fontsize=14, fontweight='bold')
+        fig_dist.tight_layout()
+        fig_dist.show()
+        
+        # Print summary
+        print("\n" + "="*70)
+        print("Summary")
+        print("="*70)
+        print(f"{'SNR':<15} {'Accuracy':<10}")
+        print("-"*25)
+        print(f"{'Original':<15} {results['original']['accuracy']:.4f}")
+        for snr in snr_values:
+            print(f"{f'{snr} dB':<15} {results[snr]['accuracy']:.4f}")
+        
+        return results
+
+    def plot_multi_snr_accuracy(self, model, time, X_test, y_test, snr_values, late_time,
+                                 conditioner=None, use_quantized=False, tflite_predict_fn=None):
+        """
+        Plot accuracy as a function of SNR.
+        """
+        if model is None and not use_quantized:
+            print("Error: No model provided!")
+            return None
+        
+        if use_quantized and tflite_predict_fn is None:
+            print("Error: TFLite predict function required for quantized model!")
+            return None
+        
+        print("\n" + "="*70)
+        print("Multi-SNR Accuracy Analysis")
+        print("="*70)
+        print(f"Test samples: {len(X_test)}")
+        print(f"SNR values: {snr_values} dB")
+        print(f"Using quantized model: {use_quantized}")
+        
+        if X_test.ndim == 3:
+            decay_curves_orig = X_test.squeeze(axis=-1)
+        else:
+            decay_curves_orig = X_test
+        
+        results = {}
+        accuracies = []
+        snr_plot_values = []
+        
+        # Process Original (no noise) - use high SNR placeholder for plotting
+        print(f"\nProcessing Original (no noise)...")
+        X_input = decay_curves_orig.reshape(len(decay_curves_orig), -1, 1)
+        
+        if use_quantized:
+            y_pred_proba = tflite_predict_fn(X_input)
+        else:
+            y_pred_proba = model.predict(X_input, verbose=0)
+        
+        if y_pred_proba.ndim > 1 and y_pred_proba.shape[1] > 1:
+            y_pred_proba_target = y_pred_proba[:, 1]
+        else:
+            y_pred_proba_target = y_pred_proba.flatten()
+        
+        y_pred = (y_pred_proba_target >= 0.5).astype(int)
+        accuracy_original = np.mean(y_pred == y_test)
+        results['original'] = accuracy_original
+        print(f"  Accuracy = {accuracy_original:.4f}")
+        
+        # Process each SNR value
+        for snr in snr_values:
+            print(f"\nProcessing SNR = {snr} dB...")
+            
+            decay_curves_noisy = conditioner.add_noise(time, decay_curves_orig, late_time, snr)
+            X_noisy = decay_curves_noisy.reshape(len(decay_curves_noisy), -1, 1)
+            
+            if use_quantized:
+                y_pred_proba = tflite_predict_fn(X_noisy)
+            else:
+                y_pred_proba = model.predict(X_noisy, verbose=0)
+            
+            if y_pred_proba.ndim > 1 and y_pred_proba.shape[1] > 1:
+                y_pred_proba_target = y_pred_proba[:, 1]
+            else:
+                y_pred_proba_target = y_pred_proba.flatten()
+            
+            y_pred = (y_pred_proba_target >= 0.5).astype(int)
+            accuracy = np.mean(y_pred == y_test)
+            results[snr] = accuracy
+            accuracies.append(accuracy)
+            snr_plot_values.append(snr)
+            print(f"  Accuracy = {accuracy:.4f}")
+        
+        # Create plot
+        fig, ax = plt.subplots(figsize=(10, 6))
+        
+        # Plot accuracy vs SNR
+        ax.plot(snr_plot_values, accuracies, color = 'tab:orange', marker= 'o', label='Accuracy')
+        
+        # Add horizontal line for original (no noise) accuracy
+        ax.axhline(accuracy_original, color='black', linestyle='--', lw=2, 
+                   label=f'Proposed classifier (no noise)')
+        ax.axhline(0.5, color='grey', linestyle='--', lw=2, 
+            label=f'Random classifier')
+        
+        ax.set_xlabel('SNR [dB]', fontsize=20)
+        ax.set_ylabel('Accuracy', fontsize=20)
+        ax.legend(loc='lower right', fontsize=16)
+        ax.grid(True, alpha=0.3)
+        ax.set_ylim([0, 1.05])
+        ax.tick_params(labelsize=20)
+        
+        # Annotate points
+        for snr, acc in zip(snr_plot_values, accuracies):
+            ax.annotate(f'{acc:.3f}', (snr, acc), textcoords="offset points", 
+                       xytext=(0, 10), ha='center', fontsize=20)
+        
+        plt.tight_layout()
+        plt.show()
+        
+        # Print summary
+        print("\n" + "="*70)
+        print("Summary")
+        print("="*70)
+        print(f"{'SNR':<15} {'Accuracy':<10}")
+        print("-"*25)
+        print(f"{'Original':<15} {results['original']:.4f}")
+        for snr in snr_values:
+            print(f"{f'{snr} dB':<15} {results[snr]:.4f}")
+        
+        return results
+
+    def plot_multi_snr_auc(self, model, time, X_test, y_test, snr_values, late_time,
+                           conditioner=None, use_quantized=False, tflite_predict_fn=None):
+        """
+        Plot AUC as a function of SNR.
+        """
+        if model is None and not use_quantized:
+            print("Error: No model provided!")
+            return None
+        
+        if use_quantized and tflite_predict_fn is None:
+            print("Error: TFLite predict function required for quantized model!")
+            return None
+        
+        print("\n" + "="*70)
+        print("Multi-SNR AUC Analysis")
+        print("="*70)
+        print(f"Test samples: {len(X_test)}")
+        print(f"SNR values: {snr_values} dB")
+        print(f"Using quantized model: {use_quantized}")
+        
+        if X_test.ndim == 3:
+            decay_curves_orig = X_test.squeeze(axis=-1)
+        else:
+            decay_curves_orig = X_test
+        
+        results = {}
+        auc_values = []
+        snr_plot_values = []
+        
+        # Process Original (no noise)
+        print(f"\nProcessing Original (no noise)...")
+        X_input = decay_curves_orig.reshape(len(decay_curves_orig), -1, 1)
+        
+        if use_quantized:
+            y_pred_proba = tflite_predict_fn(X_input)
+        else:
+            y_pred_proba = model.predict(X_input, verbose=0)
+        
+        if y_pred_proba.ndim > 1 and y_pred_proba.shape[1] > 1:
+            y_pred_proba_target = y_pred_proba[:, 1]
+        else:
+            y_pred_proba_target = y_pred_proba.flatten()
+        
+        pfa, pd, _ = roc_curve(y_test, y_pred_proba_target)
+        auc_original = auc(pfa, pd)
+        results['original'] = auc_original
+        print(f"  AUC = {auc_original:.4f}")
+        
+        # Process each SNR value
+        for snr in snr_values:
+            print(f"\nProcessing SNR = {snr} dB...")
+            
+            decay_curves_noisy = conditioner.add_noise(time, decay_curves_orig, late_time, snr)
+            X_noisy = decay_curves_noisy.reshape(len(decay_curves_noisy), -1, 1)
+            
+            if use_quantized:
+                y_pred_proba = tflite_predict_fn(X_noisy)
+            else:
+                y_pred_proba = model.predict(X_noisy, verbose=0)
+            
+            if y_pred_proba.ndim > 1 and y_pred_proba.shape[1] > 1:
+                y_pred_proba_target = y_pred_proba[:, 1]
+            else:
+                y_pred_proba_target = y_pred_proba.flatten()
+            
+            pfa, pd, _ = roc_curve(y_test, y_pred_proba_target)
+            auc_val = auc(pfa, pd)
+            results[snr] = auc_val
+            auc_values.append(auc_val)
+            snr_plot_values.append(snr)
+            print(f"  AUC = {auc_val:.4f}")
+        
+        # Create plot
+        fig, ax = plt.subplots(figsize=(10, 6))
+        
+        # Plot AUC vs SNR
+        ax.plot(snr_plot_values, auc_values, color = 'tab:orange', marker= 'o', label='AUC')
+        
+        # Add horizontal line for original (no noise) AUC
+        ax.axhline(auc_original, color='black', linestyle='--', lw=2, 
+                   label=f'Proposed classifier (no noise)')
+        ax.axhline(0.5, color='grey', linestyle='--', lw=2, 
+            label=f'Random classifier')
+        
+        ax.set_xlabel('SNR [dB]', fontsize=20)
+        ax.set_ylabel('AUC', fontsize=20)
+        ax.legend(loc='lower right', fontsize=16)
+        ax.grid(True, alpha=0.3)
+        ax.set_ylim([0.45, 1.05])
+        ax.tick_params(labelsize=20)
+        
+        # Annotate points
+        for snr, auc_val in zip(snr_plot_values, auc_values):
+            ax.annotate(f'{auc_val:.3f}', (snr, auc_val), textcoords="offset points", 
+                       xytext=(0, 10), ha='center', fontsize=20)
+        
+        plt.tight_layout()
+        plt.show()
+        
+        # Print summary
+        print("\n" + "="*70)
+        print("Summary")
+        print("="*70)
+        print(f"{'SNR':<15} {'AUC':<10}")
+        print("-"*25)
+        print(f"{'Original':<15} {results['original']:.4f}")
+        for snr in snr_values:
+            print(f"{f'{snr} dB':<15} {results[snr]:.4f}")
         
         return results

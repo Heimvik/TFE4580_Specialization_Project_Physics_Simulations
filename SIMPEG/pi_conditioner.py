@@ -26,7 +26,8 @@ class PiConditioner:
             raise ValueError("late_time is beyond the maximum time in the array")
         idx = idx[0]
 
-        signal_power = np.mean(data[idx:]**2)
+        x_mean = np.mean(data[idx:])
+        signal_power = np.mean((data[idx:] - x_mean)**2)
         snr_linear = 10**(snr_db / 10)
         noise_power = signal_power / snr_linear
         noise_std = np.sqrt(noise_power)

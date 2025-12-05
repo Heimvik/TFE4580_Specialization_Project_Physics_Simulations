@@ -941,7 +941,10 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                     print("  [4] ROC Curve (Pd vs Pfa - detection theory)")
                     print("  [5] Prediction Distribution")
                     print("  [6] Multi-SNR ROC Analysis (add noise in memory)")
-                    print("  [7] All Classification Plots")
+                    print("  [7] Multi-SNR Confusion Matrix and Prediction Distribution")
+                    print("  [8] Multi-SNR Accuracy Analysis")
+                    print("  [9] Multi-SNR AUC Analysis")
+                    print("  [10] All Classification Plots")
                     print("  [b] Back")
                     
                     plot_choice = input("\nSelect plot: ").strip().lower()
@@ -1001,6 +1004,132 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                             use_quantized=use_quantized
                         )
                     elif plot_choice == '7':
+                        # Multi-SNR Confusion Matrix and Prediction Distribution
+                        print("\n" + "-"*50)
+                        print("Multi-SNR Confusion Matrix and Prediction Distribution")
+                        print("-"*50)
+                        
+                        # Ask for SNR values
+                        default_snrs = "0, 5, 10, 15, 20"
+                        snr_input = input(f"Enter SNR values in dB (comma-separated) [{default_snrs}]: ").strip()
+                        snr_input = snr_input if snr_input else default_snrs
+                        try:
+                            snr_values = [float(s.strip()) for s in snr_input.split(',')]
+                        except ValueError:
+                            print("Invalid SNR values. Using defaults.")
+                            snr_values = [0, 5, 10, 15, 20]
+                        
+                        # Ask for late time
+                        default_late_time = 1e-4
+                        late_time_input = input(f"Enter late time for noise calculation [{default_late_time}]: ").strip()
+                        try:
+                            late_time = float(late_time_input) if late_time_input else default_late_time
+                        except ValueError:
+                            late_time = default_late_time
+                        
+                        # Ask whether to use quantized model
+                        use_quantized = False
+                        if classifier.has_quantized_model():
+                            use_q = input("Use quantized model for inference? (y/n) [n]: ").strip().lower()
+                            use_quantized = (use_q == 'y')
+                        
+                        print(f"\nSNR values: {snr_values} dB")
+                        print(f"Late time: {late_time}")
+                        print(f"Using quantized model: {use_quantized}")
+                        
+                        classifier.plot_multi_snr_confusion_and_distribution(
+                            time=time_data,
+                            X_test=X_test,
+                            y_test=y_test,
+                            snr_values=snr_values,
+                            late_time=late_time,
+                            use_quantized=use_quantized
+                        )
+                    elif plot_choice == '8':
+                        # Multi-SNR Accuracy Analysis
+                        print("\n" + "-"*50)
+                        print("Multi-SNR Accuracy Analysis")
+                        print("-"*50)
+                        
+                        # Ask for SNR values
+                        default_snrs = "0, 5, 10, 15, 20"
+                        snr_input = input(f"Enter SNR values in dB (comma-separated) [{default_snrs}]: ").strip()
+                        snr_input = snr_input if snr_input else default_snrs
+                        try:
+                            snr_values = [float(s.strip()) for s in snr_input.split(',')]
+                        except ValueError:
+                            print("Invalid SNR values. Using defaults.")
+                            snr_values = [0, 5, 10, 15, 20]
+                        
+                        # Ask for late time
+                        default_late_time = 1e-4
+                        late_time_input = input(f"Enter late time for noise calculation [{default_late_time}]: ").strip()
+                        try:
+                            late_time = float(late_time_input) if late_time_input else default_late_time
+                        except ValueError:
+                            late_time = default_late_time
+                        
+                        # Ask whether to use quantized model
+                        use_quantized = False
+                        if classifier.has_quantized_model():
+                            use_q = input("Use quantized model for inference? (y/n) [n]: ").strip().lower()
+                            use_quantized = (use_q == 'y')
+                        
+                        print(f"\nSNR values: {snr_values} dB")
+                        print(f"Late time: {late_time}")
+                        print(f"Using quantized model: {use_quantized}")
+                        
+                        classifier.plot_multi_snr_accuracy(
+                            time=time_data,
+                            X_test=X_test,
+                            y_test=y_test,
+                            snr_values=snr_values,
+                            late_time=late_time,
+                            use_quantized=use_quantized
+                        )
+                    elif plot_choice == '9':
+                        # Multi-SNR AUC Analysis
+                        print("\n" + "-"*50)
+                        print("Multi-SNR AUC Analysis")
+                        print("-"*50)
+                        
+                        # Ask for SNR values
+                        default_snrs = "0, 5, 10, 15, 20"
+                        snr_input = input(f"Enter SNR values in dB (comma-separated) [{default_snrs}]: ").strip()
+                        snr_input = snr_input if snr_input else default_snrs
+                        try:
+                            snr_values = [float(s.strip()) for s in snr_input.split(',')]
+                        except ValueError:
+                            print("Invalid SNR values. Using defaults.")
+                            snr_values = [0, 5, 10, 15, 20]
+                        
+                        # Ask for late time
+                        default_late_time = 1e-4
+                        late_time_input = input(f"Enter late time for noise calculation [{default_late_time}]: ").strip()
+                        try:
+                            late_time = float(late_time_input) if late_time_input else default_late_time
+                        except ValueError:
+                            late_time = default_late_time
+                        
+                        # Ask whether to use quantized model
+                        use_quantized = False
+                        if classifier.has_quantized_model():
+                            use_q = input("Use quantized model for inference? (y/n) [n]: ").strip().lower()
+                            use_quantized = (use_q == 'y')
+                        
+                        print(f"\nSNR values: {snr_values} dB")
+                        print(f"Late time: {late_time}")
+                        print(f"Using quantized model: {use_quantized}")
+                        
+                        classifier.plot_multi_snr_auc(
+                            time=time_data,
+                            X_test=X_test,
+                            y_test=y_test,
+                            snr_values=snr_values,
+                            late_time=late_time,
+                            use_quantized=use_quantized
+                        )
+                    elif plot_choice == '10':
                         print("\nGenerating all classification plots...")
                         classifier.plot_confusion_matrix(X_test, y_test, normalize=False)
                         classifier.plot_confusion_matrix(X_test, y_test, normalize=True)

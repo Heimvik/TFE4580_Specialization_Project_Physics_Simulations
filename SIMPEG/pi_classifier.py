@@ -661,6 +661,90 @@ class PiClassifier():
             tflite_predict_fn=tflite_predict_fn
         )
     
+    def plot_multi_snr_confusion_and_distribution(self, time, X_test, y_test, snr_values, late_time, use_quantized=False):
+        """
+        Plot confusion matrices and prediction distributions for multiple SNR values.
+        """
+        if use_quantized:
+            if not self.has_quantized_model():
+                raise ValueError("No quantized model loaded. Load a TFLite model first.")
+            tflite_predict_fn = self.predict_quantized
+            model = None
+        else:
+            if self.model is None:
+                raise ValueError("No Keras model loaded. Train or load a model first.")
+            tflite_predict_fn = None
+            model = self.model
+        
+        self.plotter.set_model(model)
+        return self.plotter.plot_multi_snr_confusion_and_distribution(
+            model=model,
+            time=time,
+            X_test=X_test,
+            y_test=y_test,
+            snr_values=snr_values,
+            late_time=late_time,
+            conditioner=self.conditioner,
+            use_quantized=use_quantized,
+            tflite_predict_fn=tflite_predict_fn
+        )
+    
+    def plot_multi_snr_accuracy(self, time, X_test, y_test, snr_values, late_time, use_quantized=False):
+        """
+        Plot accuracy as a function of SNR.
+        """
+        if use_quantized:
+            if not self.has_quantized_model():
+                raise ValueError("No quantized model loaded. Load a TFLite model first.")
+            tflite_predict_fn = self.predict_quantized
+            model = None
+        else:
+            if self.model is None:
+                raise ValueError("No Keras model loaded. Train or load a model first.")
+            tflite_predict_fn = None
+            model = self.model
+        
+        self.plotter.set_model(model)
+        return self.plotter.plot_multi_snr_accuracy(
+            model=model,
+            time=time,
+            X_test=X_test,
+            y_test=y_test,
+            snr_values=snr_values,
+            late_time=late_time,
+            conditioner=self.conditioner,
+            use_quantized=use_quantized,
+            tflite_predict_fn=tflite_predict_fn
+        )
+    
+    def plot_multi_snr_auc(self, time, X_test, y_test, snr_values, late_time, use_quantized=False):
+        """
+        Plot AUC as a function of SNR.
+        """
+        if use_quantized:
+            if not self.has_quantized_model():
+                raise ValueError("No quantized model loaded. Load a TFLite model first.")
+            tflite_predict_fn = self.predict_quantized
+            model = None
+        else:
+            if self.model is None:
+                raise ValueError("No Keras model loaded. Train or load a model first.")
+            tflite_predict_fn = None
+            model = self.model
+        
+        self.plotter.set_model(model)
+        return self.plotter.plot_multi_snr_auc(
+            model=model,
+            time=time,
+            X_test=X_test,
+            y_test=y_test,
+            snr_values=snr_values,
+            late_time=late_time,
+            conditioner=self.conditioner,
+            use_quantized=use_quantized,
+            tflite_predict_fn=tflite_predict_fn
+        )
+    
     def generate_model_summary_latex(self, input_length=None, output_file=None):
         if self.model is None:
             if input_length is None:
