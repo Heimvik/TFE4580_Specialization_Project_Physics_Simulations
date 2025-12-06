@@ -1149,6 +1149,25 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
         elif choice == '10':
             # Model analysis submenu
             try:
+                # Load test data if available
+                X_test = None
+                y_test = None
+                time = None
+                
+                # Debug: show what file we're looking for
+                print(f"\nLooking for test data based on: {hdf5_file}")
+                test_path = logger.get_split_path(hdf5_file, 'test')
+                print(f"Test path returned: {test_path}")
+                
+                if test_path:
+                    print(f"Loading test data: {os.path.basename(test_path)}")
+                    time, decay_curves, labels, _, _ = logger.load_from_hdf5(test_path)
+                    X_test = decay_curves.reshape(decay_curves.shape[0], decay_curves.shape[1], 1)
+                    y_test = labels
+                    print(f"✓ Loaded {len(X_test)} test samples")
+                else:
+                    print("Note: No test split found. Some analysis options will be limited.")
+                
                 while True:
                     print(f"\n{'='*70}")
                     print("Model Analysis")
@@ -1159,7 +1178,12 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                         print(f"Input shape: {classifier.model.input_shape}")
                         print(f"Parameters: {classifier.model.count_params():,}")
                     else:
-                        print("No model loaded.")
+                        print("No Keras model loaded.")
+                    
+                    if classifier.has_quantized_model():
+                        print(f"Quantized model: {os.path.basename(classifier.quantized_model_path)}")
+                    else:
+                        print("No quantized model loaded.")
                     
                     print("\nOptions:")
                     print("  [1] Calculate FLOPs (computational cost)")
@@ -1167,6 +1191,12 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                     print("  [3] Full LaTeX Report (document)")
                     print("  [4] Layer-by-layer Summary")
                     print("  [5] Build model (without training)")
+                    print("  [6] Model Size Analysis (Keras vs Quantized)")
+                    print("  [7] Profile Inference Time (real-time measurement)")
+                    print("  [8] Compare Model Accuracy (Keras vs Quantized)")
+                    print("  [9] Full Comprehensive Analysis (all of the above)")
+                    print("  [10] Multi-SNR Accuracy Comparison (Keras vs Quantized)")
+                    print("  [11] Multi-SNR AUC Comparison (Keras vs Quantized)")
                     print("  [b] Back")
                     
                     analysis_choice = input("\nSelect option: ").strip().lower()
@@ -1240,6 +1270,173 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                             input_len = 50
                         classifier.build_model(input_len)
                         print("\n✓ Model built successfully!")
+                    
+                    elif analysis_choice == '6':
+                        # Model Size Analysis
+                        if classifier.model is None and not classifier.has_quantized_model():
+                            print("\nNo model loaded. Load a Keras or quantized model first.")
+                            continue
+                        classifier.get_model_size()
+                    
+                    elif analysis_choice == '7':
+                        # Profile Inference Time
+                        if classifier.model is None and not classifier.has_quantized_model():
+                            print("\nNo model loaded. Load a Keras or quantized model first.")
+                            continue
+                        
+                        try:
+                            num_runs = int(input("Number of inference runs [100]: ").strip() or "100")
+                        except ValueError:
+                            num_runs = 100
+                        
+                        try:
+                            warmup = int(input("Number of warmup runs [10]: ").strip() or "10")
+                        except ValueError:
+                            warmup = 10
+                        
+                        # Use test data if available
+                        sample = None
+                        if X_test is not None and len(X_test) > 0:
+                            sample = X_test[0:1]
+                        
+                        classifier.profile_inference(X_sample=sample, num_runs=num_runs, warmup_runs=warmup)
+                    
+                    elif analysis_choice == '8':
+                        # Compare Model Accuracy
+                        if classifier.model is None and not classifier.has_quantized_model():
+                            print("\nNo model loaded. Load a Keras or quantized model first.")
+                            continue
+                        
+                        # Need test data
+                        if X_test is None:
+                            print("\nNo test data available. Split the dataset first (option 4).")
+                            continue
+                        
+                        classifier.compare_model_accuracy(X_test, y_test)
+                    
+                    elif analysis_choice == '9':
+                        # Full Comprehensive Analysis
+                        if classifier.model is None and not classifier.has_quantized_model():
+                            print("\nNo model loaded. Load a Keras or quantized model first.")
+                            continue
+                        
+                        try:
+                            num_runs = int(input("Number of inference runs [100]: ").strip() or "100")
+                        except ValueError:
+                            num_runs = 100
+                        
+                        results = classifier.full_model_analysis(
+                            X_test=X_test, 
+                            y_test=y_test, 
+                            num_inference_runs=num_runs
+                        )
+                        
+                        # Ask to save results
+                        save_results = input("\nSave analysis to file? (y/n) [n]: ").strip().lower()
+                        if save_results == 'y':
+                            import json
+                            
+                            # Convert numpy arrays to lists for JSON serialization
+                            def convert_to_serializable(obj):
+                                if isinstance(obj, np.ndarray):
+                                    return obj.tolist()
+                                elif isinstance(obj, dict):
+                                    return {k: convert_to_serializable(v) for k, v in obj.items()}
+                                elif isinstance(obj, list):
+                                    return [convert_to_serializable(i) for i in obj]
+                                elif isinstance(obj, (np.float32, np.float64)):
+                                    return float(obj)
+                                elif isinstance(obj, (np.int32, np.int64)):
+                                    return int(obj)
+                                return obj
+                            
+                            results_serializable = convert_to_serializable(results)
+                            # Remove large arrays from serialization
+                            if 'inference' in results_serializable:
+                                for model_type in ['keras', 'quantized']:
+                                    if model_type in results_serializable['inference']:
+                                        results_serializable['inference'][model_type].pop('all_times_ms', None)
+                            if 'accuracy' in results_serializable:
+                                for model_type in ['keras', 'quantized']:
+                                    if model_type in results_serializable['accuracy']:
+                                        results_serializable['accuracy'][model_type].pop('predictions', None)
+                            
+                            analysis_file = os.path.join(os.path.dirname(hdf5_file), "model_analysis.json")
+                            with open(analysis_file, 'w') as f:
+                                json.dump(results_serializable, f, indent=2)
+                            print(f"✓ Saved to: {analysis_file}")
+                    
+                    elif analysis_choice == '10':
+                        # Multi-SNR Accuracy Comparison
+                        if classifier.model is None or not classifier.has_quantized_model():
+                            print("\nBoth Keras and quantized models required. Load both models first.")
+                            continue
+                        
+                        if X_test is None or time is None:
+                            print("\nNo test data available. Split the dataset first (option 4).")
+                            continue
+                        
+                        # Get SNR values
+                        default_snrs = "0, 5, 10, 15, 20"
+                        snr_input = input(f"Enter SNR values in dB (comma-separated) [{default_snrs}]: ").strip()
+                        snr_input = snr_input if snr_input else default_snrs
+                        try:
+                            snr_values = [float(s.strip()) for s in snr_input.split(',')]
+                        except ValueError:
+                            print("Invalid SNR values. Using defaults.")
+                            snr_values = [0, 5, 10, 15, 20]
+                        
+                        # Ask for late time
+                        default_late_time = 1e-4
+                        late_time_input = input(f"Enter late time for noise calculation [{default_late_time}]: ").strip()
+                        try:
+                            late_time = float(late_time_input) if late_time_input else default_late_time
+                        except ValueError:
+                            late_time = default_late_time
+                        
+                        print(f"\nSNR values: {snr_values} dB")
+                        print(f"Late time: {late_time}")
+                        
+                        classifier.plot_multi_snr_accuracy_comparison(
+                            time=time, X_test=X_test, y_test=y_test,
+                            snr_values=snr_values, late_time=late_time
+                        )
+                    
+                    elif analysis_choice == '11':
+                        # Multi-SNR AUC Comparison
+                        if classifier.model is None or not classifier.has_quantized_model():
+                            print("\nBoth Keras and quantized models required. Load both models first.")
+                            continue
+                        
+                        if X_test is None or time is None:
+                            print("\nNo test data available. Split the dataset first (option 4).")
+                            continue
+                        
+                        # Get SNR values
+                        default_snrs = "0, 5, 10, 15, 20"
+                        snr_input = input(f"Enter SNR values in dB (comma-separated) [{default_snrs}]: ").strip()
+                        snr_input = snr_input if snr_input else default_snrs
+                        try:
+                            snr_values = [float(s.strip()) for s in snr_input.split(',')]
+                        except ValueError:
+                            print("Invalid SNR values. Using defaults.")
+                            snr_values = [0, 5, 10, 15, 20]
+                        
+                        # Ask for late time
+                        default_late_time = 1e-4
+                        late_time_input = input(f"Enter late time for noise calculation [{default_late_time}]: ").strip()
+                        try:
+                            late_time = float(late_time_input) if late_time_input else default_late_time
+                        except ValueError:
+                            late_time = default_late_time
+                        
+                        print(f"\nSNR values: {snr_values} dB")
+                        print(f"Late time: {late_time}")
+                        
+                        classifier.plot_multi_snr_auc_comparison(
+                            time=time, X_test=X_test, y_test=y_test,
+                            snr_values=snr_values, late_time=late_time
+                        )
                     
                     elif analysis_choice == 'b':
                         break

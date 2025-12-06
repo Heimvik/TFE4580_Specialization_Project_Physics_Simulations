@@ -131,7 +131,368 @@ class PiClassifier():
     def has_quantized_model(self):
         """Check if a quantized model is loaded."""
         return hasattr(self, 'tflite_interpreter') and self.tflite_interpreter is not None
-    
+
+    def get_model_size(self, model_path=None):
+        """
+        Get the size of a Keras model in memory and on disk.
+        
+        Model size calculation:
+        - On disk: Direct file size measurement
+        - In memory: Sum of all weight arrays' sizes (nbytes = elements * bytes_per_element)
+        - Parameters are typically stored as float32 (4 bytes) or float16 (2 bytes)
+        
+        Returns dict with sizes in bytes, KB, and MB.
+        """
+        import tempfile
+        import io
+        
+        print("\n" + "="*70)
+        print("Model Size Analysis")
+        print("="*70)
+        
+        if self.model is None:
+            print("Error: No Keras model loaded.")
+            return None
+        
+        results = {}
+        
+        # Method 1: Count parameters and multiply by dtype size
+        total_params = self.model.count_params()
+        trainable_params = sum(np.prod(w.shape) for w in self.model.trainable_weights)
+        non_trainable_params = sum(np.prod(w.shape) for w in self.model.non_trainable_weights)
+        
+        # Get actual memory size by summing weight arrays
+        memory_size_bytes = sum(w.numpy().nbytes for w in self.model.weights)
+        
+        results['keras'] = {
+            'total_params': total_params,
+            'trainable_params': int(trainable_params),
+            'non_trainable_params': int(non_trainable_params),
+            'memory_bytes': memory_size_bytes,
+            'memory_kb': memory_size_bytes / 1024,
+            'memory_mb': memory_size_bytes / (1024 * 1024),
+        }
+        
+        # Method 2: Save to temp file to get actual serialized size
+        import tempfile
+        import os
+        fd, tmp_path = tempfile.mkstemp(suffix='.keras')
+        os.close(fd)  # Close the file descriptor
+        self.model.save(tmp_path)
+        disk_size = os.path.getsize(tmp_path)
+        results['keras']['disk_bytes'] = disk_size
+        results['keras']['disk_kb'] = disk_size / 1024
+        results['keras']['disk_mb'] = disk_size / (1024 * 1024)
+        os.unlink(tmp_path)  # Clean up temp file
+        
+        print(f"\n📦 Keras Model Size:")
+        print(f"  Parameters:")
+        print(f"    - Total:         {total_params:,}")
+        print(f"    - Trainable:     {int(trainable_params):,}")
+        print(f"    - Non-trainable: {int(non_trainable_params):,}")
+        print(f"  Memory (weights in RAM):")
+        print(f"    - {results['keras']['memory_bytes']:,} bytes")
+        print(f"    - {results['keras']['memory_kb']:.2f} KB")
+        print(f"    - {results['keras']['memory_mb']:.4f} MB")
+        print(f"  Disk (serialized .keras file):")
+        print(f"    - {results['keras']['disk_bytes']:,} bytes")
+        print(f"    - {results['keras']['disk_kb']:.2f} KB")
+        print(f"    - {results['keras']['disk_mb']:.4f} MB")
+        
+        # If quantized model is loaded, compare
+        if self.has_quantized_model():
+            quant_size = os.path.getsize(self.quantized_model_path)
+            results['quantized'] = {
+                'disk_bytes': quant_size,
+                'disk_kb': quant_size / 1024,
+                'disk_mb': quant_size / (1024 * 1024),
+            }
+            
+            compression_ratio = results['keras']['disk_bytes'] / quant_size
+            
+            print(f"\n📦 Quantized Model Size:")
+            print(f"  Disk (.tflite file):")
+            print(f"    - {quant_size:,} bytes")
+            print(f"    - {results['quantized']['disk_kb']:.2f} KB")
+            print(f"    - {results['quantized']['disk_mb']:.4f} MB")
+            print(f"\n📊 Comparison:")
+            print(f"  Compression ratio: {compression_ratio:.2f}x")
+            print(f"  Size reduction: {(1 - 1/compression_ratio) * 100:.1f}%")
+            
+            results['comparison'] = {
+                'compression_ratio': compression_ratio,
+                'size_reduction_percent': (1 - 1/compression_ratio) * 100
+            }
+            
+            # Generate comparison plot
+            self.plotter.plot_model_size_comparison(results)
+        
+        return results
+
+    def profile_inference(self, X_sample=None, num_runs=100, warmup_runs=10, show_plot=True):
+        """
+        Profile inference time for both Keras and quantized models.
+        
+        Measures actual wall-clock time for forward propagation.
+        Uses multiple runs to get statistically meaningful results.
+        
+        Parameters:
+        -----------
+        X_sample : np.ndarray, optional
+            Input sample for inference. If None, creates a random sample.
+        num_runs : int
+            Number of inference runs for timing (default: 100)
+        warmup_runs : int
+            Number of warmup runs before timing (default: 10)
+        
+        Returns dict with timing statistics.
+        """
+        import time
+        
+        print("\n" + "="*70)
+        print("Inference Profiling")
+        print("="*70)
+        print(f"Number of runs: {num_runs}")
+        print(f"Warmup runs: {warmup_runs}")
+        
+        results = {}
+        
+        # Create sample input if not provided
+        if X_sample is None:
+            if self.model is not None:
+                input_shape = self.model.input_shape[1:]
+                X_sample = np.random.randn(1, *input_shape).astype(np.float32)
+            elif self.has_quantized_model():
+                input_shape = self.tflite_input_details[0]['shape'][1:]
+                X_sample = np.random.randn(1, *input_shape).astype(np.float32)
+            else:
+                print("Error: No model loaded.")
+                return None
+        
+        # Ensure correct shape
+        if X_sample.ndim == 2:
+            X_sample = X_sample.reshape(1, X_sample.shape[0], X_sample.shape[1])
+        elif X_sample.ndim == 1:
+            X_sample = X_sample.reshape(1, -1, 1)
+        
+        print(f"Input shape: {X_sample.shape}")
+        
+        # Profile Keras model
+        if self.model is not None:
+            print(f"\n⏱️  Profiling Keras Model...")
+            
+            # Warmup
+            for _ in range(warmup_runs):
+                _ = self.model.predict(X_sample, verbose=0)
+            
+            # Timed runs
+            keras_times = []
+            for _ in range(num_runs):
+                start = time.perf_counter()
+                _ = self.model.predict(X_sample, verbose=0)
+                end = time.perf_counter()
+                keras_times.append((end - start) * 1000)  # Convert to ms
+            
+            results['keras'] = {
+                'mean_ms': np.mean(keras_times),
+                'std_ms': np.std(keras_times),
+                'min_ms': np.min(keras_times),
+                'max_ms': np.max(keras_times),
+                'median_ms': np.median(keras_times),
+                'all_times_ms': keras_times
+            }
+            
+            print(f"  Mean:   {results['keras']['mean_ms']:.4f} ms")
+            print(f"  Std:    {results['keras']['std_ms']:.4f} ms")
+            print(f"  Min:    {results['keras']['min_ms']:.4f} ms")
+            print(f"  Max:    {results['keras']['max_ms']:.4f} ms")
+            print(f"  Median: {results['keras']['median_ms']:.4f} ms")
+        
+        # Profile TFLite model
+        if self.has_quantized_model():
+            print(f"\n⏱️  Profiling Quantized (TFLite) Model...")
+            
+            input_details = self.tflite_input_details[0]
+            output_details = self.tflite_output_details[0]
+            
+            # Prepare input
+            sample = X_sample.astype(np.float32)
+            if input_details['dtype'] == np.int8:
+                input_scale = input_details.get('quantization_parameters', {}).get('scales', [1.0])
+                input_zero_point = input_details.get('quantization_parameters', {}).get('zero_points', [0])
+                if len(input_scale) > 0 and input_scale[0] != 0:
+                    sample = sample / input_scale[0] + input_zero_point[0]
+                sample = sample.astype(np.int8)
+            
+            # Warmup
+            for _ in range(warmup_runs):
+                self.tflite_interpreter.set_tensor(input_details['index'], sample)
+                self.tflite_interpreter.invoke()
+            
+            # Timed runs
+            tflite_times = []
+            for _ in range(num_runs):
+                start = time.perf_counter()
+                self.tflite_interpreter.set_tensor(input_details['index'], sample)
+                self.tflite_interpreter.invoke()
+                _ = self.tflite_interpreter.get_tensor(output_details['index'])
+                end = time.perf_counter()
+                tflite_times.append((end - start) * 1000)  # Convert to ms
+            
+            results['quantized'] = {
+                'mean_ms': np.mean(tflite_times),
+                'std_ms': np.std(tflite_times),
+                'min_ms': np.min(tflite_times),
+                'max_ms': np.max(tflite_times),
+                'median_ms': np.median(tflite_times),
+                'all_times_ms': tflite_times
+            }
+            
+            print(f"  Mean:   {results['quantized']['mean_ms']:.4f} ms")
+            print(f"  Std:    {results['quantized']['std_ms']:.4f} ms")
+            print(f"  Min:    {results['quantized']['min_ms']:.4f} ms")
+            print(f"  Max:    {results['quantized']['max_ms']:.4f} ms")
+            print(f"  Median: {results['quantized']['median_ms']:.4f} ms")
+        
+        # Comparison
+        if 'keras' in results and 'quantized' in results:
+            speedup = results['keras']['mean_ms'] / results['quantized']['mean_ms']
+            print(f"\n📊 Comparison:")
+            print(f"  Speedup (Quantized vs Keras): {speedup:.2f}x")
+            print(f"  {'Quantized is faster' if speedup > 1 else 'Keras is faster'}")
+            results['comparison'] = {'speedup': speedup}
+        
+        # Generate comparison plot if both models are available
+        if show_plot and ('keras' in results or 'quantized' in results):
+            self.plotter.plot_inference_time_comparison(results)
+        
+        return results
+
+    def compare_model_accuracy(self, X_test, y_test, show_plot=True):
+        """
+        Compare accuracy between Keras and quantized models.
+        """
+        from sklearn.metrics import accuracy_score, classification_report
+        
+        print("\n" + "="*70)
+        print("Model Accuracy Comparison")
+        print("="*70)
+        
+        results = {}
+        
+        if self.model is not None:
+            print("\n📊 Keras Model:")
+            y_pred_keras = self.model.predict(X_test, verbose=0)
+            y_pred_keras_class = np.argmax(y_pred_keras, axis=1)
+            acc_keras = accuracy_score(y_test, y_pred_keras_class)
+            results['keras'] = {'accuracy': acc_keras, 'predictions': y_pred_keras}
+            print(f"  Accuracy: {acc_keras:.4f} ({acc_keras*100:.2f}%)")
+        
+        if self.has_quantized_model():
+            print("\n📊 Quantized Model:")
+            y_pred_quant = self.predict_quantized(X_test)
+            y_pred_quant_class = np.argmax(y_pred_quant, axis=1)
+            acc_quant = accuracy_score(y_test, y_pred_quant_class)
+            results['quantized'] = {'accuracy': acc_quant, 'predictions': y_pred_quant}
+            print(f"  Accuracy: {acc_quant:.4f} ({acc_quant*100:.2f}%)")
+        
+        if 'keras' in results and 'quantized' in results:
+            acc_diff = results['keras']['accuracy'] - results['quantized']['accuracy']
+            print(f"\n📊 Comparison:")
+            print(f"  Accuracy difference: {acc_diff:.4f} ({acc_diff*100:.2f}%)")
+            print(f"  {'Keras is more accurate' if acc_diff > 0 else 'Quantized is more accurate' if acc_diff < 0 else 'Same accuracy'}")
+            results['comparison'] = {'accuracy_difference': acc_diff}
+        
+        # Generate comparison plot if both models are available
+        if show_plot and ('keras' in results or 'quantized' in results):
+            self.plotter.plot_accuracy_comparison(results)
+        
+        return results
+
+    def full_model_analysis(self, X_test=None, y_test=None, num_inference_runs=100):
+        """
+        Comprehensive model analysis including size, FLOPs, inference time, and accuracy.
+        """
+        print("\n" + "="*70)
+        print("COMPREHENSIVE MODEL ANALYSIS")
+        print("="*70)
+        
+        results = {}
+        
+        # 1. Model Size Analysis (plot generated inside method if quantized available)
+        print("\n" + "-"*70)
+        print("1. MODEL SIZE ANALYSIS")
+        print("-"*70)
+        results['size'] = self.get_model_size()
+        
+        # 2. FLOP Calculation
+        if self.model is not None:
+            print("\n" + "-"*70)
+            print("2. COMPUTATIONAL COST (FLOPs)")
+            print("-"*70)
+            results['flops'] = self.calculate_flops(verbose=True)
+        
+        # 3. Inference Profiling (plot generated inside method)
+        print("\n" + "-"*70)
+        print("3. INFERENCE TIME PROFILING")
+        print("-"*70)
+        sample = None
+        if X_test is not None and len(X_test) > 0:
+            sample = X_test[0:1]
+        results['inference'] = self.profile_inference(X_sample=sample, num_runs=num_inference_runs, show_plot=True)
+        
+        # 4. Accuracy Comparison (plot generated inside method)
+        if X_test is not None and y_test is not None:
+            print("\n" + "-"*70)
+            print("4. ACCURACY COMPARISON")
+            print("-"*70)
+            results['accuracy'] = self.compare_model_accuracy(X_test, y_test, show_plot=True)
+        
+        # Summary
+        print("\n" + "="*70)
+        print("SUMMARY")
+        print("="*70)
+        
+        if results.get('size'):
+            print(f"\n📦 Size:")
+            if 'keras' in results['size']:
+                print(f"  Keras:     {results['size']['keras']['disk_kb']:.2f} KB")
+            if 'quantized' in results['size']:
+                print(f"  Quantized: {results['size']['quantized']['disk_kb']:.2f} KB")
+                if 'comparison' in results['size']:
+                    print(f"  Compression: {results['size']['comparison']['compression_ratio']:.2f}x")
+        
+        if results.get('flops'):
+            print(f"\n⚡ FLOPs per inference: {results['flops']['total_flops']:,}")
+        
+        if results.get('inference'):
+            print(f"\n⏱️  Inference Time:")
+            if 'keras' in results['inference']:
+                print(f"  Keras:     {results['inference']['keras']['mean_ms']:.4f} ms")
+            if 'quantized' in results['inference']:
+                print(f"  Quantized: {results['inference']['quantized']['mean_ms']:.4f} ms")
+                if 'comparison' in results['inference']:
+                    print(f"  Speedup:   {results['inference']['comparison']['speedup']:.2f}x")
+        
+        if results.get('accuracy'):
+            print(f"\n🎯 Accuracy:")
+            if 'keras' in results['accuracy']:
+                print(f"  Keras:     {results['accuracy']['keras']['accuracy']*100:.2f}%")
+            if 'quantized' in results['accuracy']:
+                print(f"  Quantized: {results['accuracy']['quantized']['accuracy']*100:.2f}%")
+        
+        # Generate comprehensive comparison plot
+        print("\n" + "-"*70)
+        print("COMPREHENSIVE COMPARISON PLOT")
+        print("-"*70)
+        self.plotter.plot_comprehensive_model_comparison(
+            results.get('size'),
+            results.get('inference'),
+            results.get('accuracy')
+        )
+        
+        return results
+
     def calculate_flops(self, input_length=None, verbose=True):
         print("\n" + "="*70)
         print("FLOP Calculation for Single Inference")
@@ -744,6 +1105,182 @@ class PiClassifier():
             use_quantized=use_quantized,
             tflite_predict_fn=tflite_predict_fn
         )
+
+    def plot_multi_snr_accuracy_comparison(self, time, X_test, y_test, snr_values, late_time):
+        """
+        Plot accuracy vs SNR comparing both Keras and Quantized models.
+        """
+        if self.model is None:
+            raise ValueError("No Keras model loaded. Train or load a model first.")
+        if not self.has_quantized_model():
+            raise ValueError("No quantized model loaded. Load a TFLite model first.")
+        
+        print("\n" + "="*70)
+        print("Multi-SNR Accuracy Comparison: Keras vs Quantized")
+        print("="*70)
+        
+        # Collect Keras results
+        print("\n--- Keras Model ---")
+        keras_results = self._compute_multi_snr_accuracy(
+            model=self.model, time=time, X_test=X_test, y_test=y_test,
+            snr_values=snr_values, late_time=late_time, use_quantized=False
+        )
+        
+        # Collect Quantized results
+        print("\n--- Quantized Model ---")
+        quantized_results = self._compute_multi_snr_accuracy(
+            model=None, time=time, X_test=X_test, y_test=y_test,
+            snr_values=snr_values, late_time=late_time, use_quantized=True,
+            tflite_predict_fn=self.predict_quantized
+        )
+        
+        # Generate comparison plot
+        self.plotter.plot_multi_snr_accuracy_comparison(keras_results, quantized_results, snr_values)
+        
+        return {'keras': keras_results, 'quantized': quantized_results}
+
+    def plot_multi_snr_auc_comparison(self, time, X_test, y_test, snr_values, late_time):
+        """
+        Plot AUC vs SNR comparing both Keras and Quantized models.
+        """
+        if self.model is None:
+            raise ValueError("No Keras model loaded. Train or load a model first.")
+        if not self.has_quantized_model():
+            raise ValueError("No quantized model loaded. Load a TFLite model first.")
+        
+        print("\n" + "="*70)
+        print("Multi-SNR AUC Comparison: Keras vs Quantized")
+        print("="*70)
+        
+        # Collect Keras results
+        print("\n--- Keras Model ---")
+        keras_results = self._compute_multi_snr_auc(
+            model=self.model, time=time, X_test=X_test, y_test=y_test,
+            snr_values=snr_values, late_time=late_time, use_quantized=False
+        )
+        
+        # Collect Quantized results
+        print("\n--- Quantized Model ---")
+        quantized_results = self._compute_multi_snr_auc(
+            model=None, time=time, X_test=X_test, y_test=y_test,
+            snr_values=snr_values, late_time=late_time, use_quantized=True,
+            tflite_predict_fn=self.predict_quantized
+        )
+        
+        # Generate comparison plot
+        self.plotter.plot_multi_snr_auc_comparison(keras_results, quantized_results, snr_values)
+        
+        return {'keras': keras_results, 'quantized': quantized_results}
+
+    def _compute_multi_snr_accuracy(self, model, time, X_test, y_test, snr_values, late_time, 
+                                     use_quantized=False, tflite_predict_fn=None):
+        """Helper method to compute accuracy at different SNR levels."""
+        from sklearn.metrics import roc_curve, auc
+        
+        if X_test.ndim == 3:
+            decay_curves_orig = X_test.squeeze(axis=-1)
+        else:
+            decay_curves_orig = X_test
+        
+        results = {}
+        
+        # Process Original (no noise)
+        print(f"Processing Original (no noise)...")
+        X_input = decay_curves_orig.reshape(len(decay_curves_orig), -1, 1)
+        
+        if use_quantized:
+            y_pred_proba = tflite_predict_fn(X_input)
+        else:
+            y_pred_proba = model.predict(X_input, verbose=0)
+        
+        if y_pred_proba.ndim > 1 and y_pred_proba.shape[1] > 1:
+            y_pred_proba_target = y_pred_proba[:, 1]
+        else:
+            y_pred_proba_target = y_pred_proba.flatten()
+        
+        y_pred = (y_pred_proba_target >= 0.5).astype(int)
+        accuracy_original = np.mean(y_pred == y_test)
+        results['original'] = accuracy_original
+        print(f"  Accuracy = {accuracy_original:.4f}")
+        
+        # Process each SNR value
+        for snr in snr_values:
+            print(f"Processing SNR = {snr} dB...")
+            
+            decay_curves_noisy = self.conditioner.add_noise(time, decay_curves_orig, late_time, snr)
+            X_noisy = decay_curves_noisy.reshape(len(decay_curves_noisy), -1, 1)
+            
+            if use_quantized:
+                y_pred_proba = tflite_predict_fn(X_noisy)
+            else:
+                y_pred_proba = model.predict(X_noisy, verbose=0)
+            
+            if y_pred_proba.ndim > 1 and y_pred_proba.shape[1] > 1:
+                y_pred_proba_target = y_pred_proba[:, 1]
+            else:
+                y_pred_proba_target = y_pred_proba.flatten()
+            
+            y_pred = (y_pred_proba_target >= 0.5).astype(int)
+            accuracy = np.mean(y_pred == y_test)
+            results[snr] = accuracy
+            print(f"  Accuracy = {accuracy:.4f}")
+        
+        return results
+
+    def _compute_multi_snr_auc(self, model, time, X_test, y_test, snr_values, late_time,
+                                use_quantized=False, tflite_predict_fn=None):
+        """Helper method to compute AUC at different SNR levels."""
+        from sklearn.metrics import roc_curve, auc
+        
+        if X_test.ndim == 3:
+            decay_curves_orig = X_test.squeeze(axis=-1)
+        else:
+            decay_curves_orig = X_test
+        
+        results = {}
+        
+        # Process Original (no noise)
+        print(f"Processing Original (no noise)...")
+        X_input = decay_curves_orig.reshape(len(decay_curves_orig), -1, 1)
+        
+        if use_quantized:
+            y_pred_proba = tflite_predict_fn(X_input)
+        else:
+            y_pred_proba = model.predict(X_input, verbose=0)
+        
+        if y_pred_proba.ndim > 1 and y_pred_proba.shape[1] > 1:
+            y_pred_proba_target = y_pred_proba[:, 1]
+        else:
+            y_pred_proba_target = y_pred_proba.flatten()
+        
+        fpr, tpr, _ = roc_curve(y_test, y_pred_proba_target)
+        auc_original = auc(fpr, tpr)
+        results['original'] = auc_original
+        print(f"  AUC = {auc_original:.4f}")
+        
+        # Process each SNR value
+        for snr in snr_values:
+            print(f"Processing SNR = {snr} dB...")
+            
+            decay_curves_noisy = self.conditioner.add_noise(time, decay_curves_orig, late_time, snr)
+            X_noisy = decay_curves_noisy.reshape(len(decay_curves_noisy), -1, 1)
+            
+            if use_quantized:
+                y_pred_proba = tflite_predict_fn(X_noisy)
+            else:
+                y_pred_proba = model.predict(X_noisy, verbose=0)
+            
+            if y_pred_proba.ndim > 1 and y_pred_proba.shape[1] > 1:
+                y_pred_proba_target = y_pred_proba[:, 1]
+            else:
+                y_pred_proba_target = y_pred_proba.flatten()
+            
+            fpr, tpr, _ = roc_curve(y_test, y_pred_proba_target)
+            auc_val = auc(fpr, tpr)
+            results[snr] = auc_val
+            print(f"  AUC = {auc_val:.4f}")
+        
+        return results
     
     def generate_model_summary_latex(self, input_length=None, output_file=None):
         if self.model is None:
@@ -983,6 +1520,4 @@ class PiClassifier():
         print("="*70)
         
         return latex_doc
-
-
 

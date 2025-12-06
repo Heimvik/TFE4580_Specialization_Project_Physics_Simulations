@@ -460,9 +460,10 @@ class ClassifierPlotter(BasePlotter):
         y_pred = np.argmax(y_pred_proba, axis=1)
         
         cm = confusion_matrix(y_test, y_pred)
+        cm = cm.T  # Transpose so rows=predicted, cols=true
         
         if normalize:
-            cm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+            cm = cm.astype('float') / cm.sum(axis=0)[np.newaxis, :]  # Normalize along columns (true labels)
             fmt = '.2%'
             title = 'Normalized Confusion Matrix'
         else:
@@ -1257,6 +1258,7 @@ class ClassifierPlotter(BasePlotter):
         # Plot confusion matrix for Original
         row, col = 0, 0
         cm = confusion_matrix(y_test, y_pred)
+        cm = cm.T  # Transpose so rows=predicted, cols=true
         sns.heatmap(cm, annot=True, fmt='d', cmap='Greys', square=True,
                    xticklabels=['$C_A$', '$C_P$'], yticklabels=['$C_A$', '$C_P$'],
                    ax=axes_cm[row, col], annot_kws={'size': 12}, cbar=False)
@@ -1302,6 +1304,7 @@ class ClassifierPlotter(BasePlotter):
             row = plot_idx // n_cols
             col = plot_idx % n_cols
             cm = confusion_matrix(y_test, y_pred)
+            cm = cm.T  # Transpose so rows=predicted, cols=true
             sns.heatmap(cm, annot=True, fmt='d', cmap='Greys', square=True,
                        xticklabels=['$C_A$', '$C_P$'], yticklabels=['$C_A$', '$C_P$'],
                        ax=axes_cm[row, col], annot_kws={'size': 12}, cbar=False)
@@ -1346,6 +1349,63 @@ class ClassifierPlotter(BasePlotter):
             print(f"{f'{snr} dB':<15} {results[snr]['accuracy']:.4f}")
         
         return results
+
+    def multi_snr_plot(self, snr_values, data_series, ylabel, ylim, original_values=None):
+        """
+        Generic plot for multi-SNR data.
+        
+        Parameters:
+        -----------
+        snr_values : list
+            List of SNR values
+        data_series : list of tuples
+            Each tuple: (values_list, label, color)
+        ylabel : str
+            Y-axis label
+        ylim : list
+            Y-axis limits [ymin, ymax]
+        original_values : dict, optional
+            Keys: 'keras', 'quantized', 'original' with corresponding values
+        """
+        fig, ax = plt.subplots(figsize=(10, 6))
+        
+        for values, label, color in data_series:
+            ax.plot(snr_values, values, 'o:', color=color, lw=2.5, markersize=10, label=label)
+        
+        # Original lines
+        if original_values:
+            for key, val in original_values.items():
+                if key == 'keras' or key == 'original':
+                    ax.axhline(val, color='tab:orange', linestyle='-', lw=2,
+                              label=f'Proposed classifier (FP32/no noise): {val:.3f}')
+                elif key == 'quantized':
+                    ax.axhline(val, color='tab:blue', linestyle='-', lw=2,
+                              label=f'Proposed classifier (INT8/no noise): {val:.3f}')
+        
+        ax.axhline(0.5, color='grey', linestyle='--', lw=2, label='Random classifier')
+        
+        ax.set_xlabel('SNR [dB]', fontsize=20)
+        ax.set_ylabel(ylabel, fontsize=20)
+        ax.legend(loc='lower right', fontsize=16)
+        ax.grid(True, alpha=0.3)
+        ax.set_ylim(ylim)
+        ax.tick_params(labelsize=20)
+        
+        # Annotations
+        for i, snr in enumerate(snr_values):
+            for j, (values, _, color) in enumerate(data_series):
+                val = values[i]
+                if i == len(snr_values) - 1:
+                    xytext = (0, 10)
+                else:
+                    xytext = (0, -20)
+                ax.annotate(f'{val:.3f}', (snr, val), textcoords="offset points", 
+                           xytext=xytext, ha='center', fontsize=20, color='black')
+        
+        plt.tight_layout()
+        plt.show()
+        
+        return fig
 
     def plot_multi_snr_accuracy(self, model, time, X_test, y_test, snr_values, late_time,
                                  conditioner=None, use_quantized=False, tflite_predict_fn=None):
@@ -1420,31 +1480,9 @@ class ClassifierPlotter(BasePlotter):
             print(f"  Accuracy = {accuracy:.4f}")
         
         # Create plot
-        fig, ax = plt.subplots(figsize=(10, 6))
-        
-        # Plot accuracy vs SNR
-        ax.plot(snr_plot_values, accuracies, color = 'tab:orange', marker= 'o', label='Accuracy')
-        
-        # Add horizontal line for original (no noise) accuracy
-        ax.axhline(accuracy_original, color='black', linestyle='--', lw=2, 
-                   label=f'Proposed classifier (no noise)')
-        ax.axhline(0.5, color='grey', linestyle='--', lw=2, 
-            label=f'Random classifier')
-        
-        ax.set_xlabel('SNR [dB]', fontsize=20)
-        ax.set_ylabel('Accuracy', fontsize=20)
-        ax.legend(loc='lower right', fontsize=16)
-        ax.grid(True, alpha=0.3)
-        ax.set_ylim([0, 1.05])
-        ax.tick_params(labelsize=20)
-        
-        # Annotate points
-        for snr, acc in zip(snr_plot_values, accuracies):
-            ax.annotate(f'{acc:.3f}', (snr, acc), textcoords="offset points", 
-                       xytext=(0, 10), ha='center', fontsize=20)
-        
-        plt.tight_layout()
-        plt.show()
+        data_series = [(accuracies, 'Proposed classifier (FP32)', 'tab:orange')]
+        original_values = {'original': accuracy_original}
+        fig = self.multi_snr_plot(snr_plot_values, data_series, 'Accuracy', [0.45, 1.05], original_values)
         
         # Print summary
         print("\n" + "="*70)
@@ -1531,31 +1569,9 @@ class ClassifierPlotter(BasePlotter):
             print(f"  AUC = {auc_val:.4f}")
         
         # Create plot
-        fig, ax = plt.subplots(figsize=(10, 6))
-        
-        # Plot AUC vs SNR
-        ax.plot(snr_plot_values, auc_values, color = 'tab:orange', marker= 'o', label='AUC')
-        
-        # Add horizontal line for original (no noise) AUC
-        ax.axhline(auc_original, color='black', linestyle='--', lw=2, 
-                   label=f'Proposed classifier (no noise)')
-        ax.axhline(0.5, color='grey', linestyle='--', lw=2, 
-            label=f'Random classifier')
-        
-        ax.set_xlabel('SNR [dB]', fontsize=20)
-        ax.set_ylabel('AUC', fontsize=20)
-        ax.legend(loc='lower right', fontsize=16)
-        ax.grid(True, alpha=0.3)
-        ax.set_ylim([0.45, 1.05])
-        ax.tick_params(labelsize=20)
-        
-        # Annotate points
-        for snr, auc_val in zip(snr_plot_values, auc_values):
-            ax.annotate(f'{auc_val:.3f}', (snr, auc_val), textcoords="offset points", 
-                       xytext=(0, 10), ha='center', fontsize=20)
-        
-        plt.tight_layout()
-        plt.show()
+        data_series = [(auc_values, 'AUC', 'tab:orange')]
+        original_values = {'original': auc_original}
+        fig = self.multi_snr_plot(snr_plot_values, data_series, 'AUC', [0.45, 1.05], original_values)
         
         # Print summary
         print("\n" + "="*70)
@@ -1568,3 +1584,386 @@ class ClassifierPlotter(BasePlotter):
             print(f"{f'{snr} dB':<15} {results[snr]:.4f}")
         
         return results
+
+    def plot_model_size_comparison(self, size_results):
+        """
+        Plot bar chart comparing FP32 vs INT8 model sizes.
+        
+        Parameters:
+        -----------
+        size_results : dict
+            Results from classifier.get_model_size()
+        """
+        if size_results is None:
+            print("Error: No size results provided!")
+            return
+        
+        if 'quantized' not in size_results:
+            print("Error: No quantized model data available for comparison!")
+            return
+        
+        fig, ax = plt.subplots(figsize=(8, 6))
+        
+        models = ['Proposed classifier (FP32)', 'Proposed classifier (INT8)']
+        sizes_kb = [size_results['keras']['disk_kb'], size_results['quantized']['disk_kb']]
+        colors = ['tab:orange', 'tab:blue']
+        
+        bars = ax.bar(models, sizes_kb, color=colors, width=0.6, edgecolor='black', linewidth=1.5)
+        
+        # Add value labels on bars
+        for bar, size in zip(bars, sizes_kb):
+            height = bar.get_height()
+            ax.annotate(f'{size:.2f} KB',
+                       xy=(bar.get_x() + bar.get_width() / 2, height),
+                       xytext=(0, 5),
+                       textcoords="offset points",
+                       ha='center', va='bottom', fontsize=20, fontweight='bold')
+        
+        # Add compression ratio annotation
+        if 'comparison' in size_results:
+            ratio = size_results['comparison']['compression_ratio']
+            reduction = size_results['comparison']['size_reduction_percent']
+            ax.text(0.5, 0.95, f'Compression: {ratio:.2f}× ({reduction:.1f}% reduction)',
+                   transform=ax.transAxes, ha='center', va='top', fontsize=18,
+                   bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+        
+        ax.set_ylabel('Model Size [KB]', fontsize=20)
+        ax.set_xlabel('Model Type', fontsize=20)
+        ax.tick_params(labelsize=20)
+        ax.set_ylim([0, max(sizes_kb) * 1.25])
+        ax.grid(True, alpha=0.3, axis='y')
+        
+        plt.tight_layout()
+        plt.show()
+        
+        return fig
+
+    def plot_inference_time_comparison(self, inference_results):
+        """
+        Plot inference time evolution over runs (log y-axis) comparing FP32 vs INT8 models.
+        
+        Parameters:
+        -----------
+        inference_results : dict
+            Results from classifier.profile_inference()
+        """
+        if inference_results is None:
+            print("Error: No inference results provided!")
+            return
+        
+        has_keras = 'keras' in inference_results
+        has_quantized = 'quantized' in inference_results
+        
+        if not has_keras and not has_quantized:
+            print("Error: No model timing data available!")
+            return
+        
+        # Plot: Inference time evolution over runs (log y-axis)
+        fig, ax = plt.subplots(figsize=(10, 6))
+        
+        if has_keras:
+            keras_times = inference_results['keras']['all_times_ms']
+            runs_keras = np.arange(1, len(keras_times) + 1)
+            ax.plot(runs_keras, keras_times, color='tab:orange', alpha=0.7, 
+                    linewidth=1.5, label='Proposed classifier (FP32)')
+            # Dotted average line
+            keras_mean = inference_results['keras']['mean_ms']
+            ax.axhline(y=keras_mean, color='tab:orange', linestyle='--', 
+                       linewidth=2.5, label=f'FP32 average: {keras_mean:.3f} ms')
+        
+        if has_quantized:
+            quant_times = inference_results['quantized']['all_times_ms']
+            runs_quant = np.arange(1, len(quant_times) + 1)
+            ax.plot(runs_quant, quant_times, color='tab:blue', alpha=0.7, 
+                    linewidth=1.5, label='Proposed classifier (INT8)')
+            # Dotted average line
+            quant_mean = inference_results['quantized']['mean_ms']
+            ax.axhline(y=quant_mean, color='tab:blue', linestyle='--', 
+                       linewidth=2.5, label=f'INT8 average: {quant_mean:.3f} ms')
+        
+        ax.set_yscale('log')
+        ax.set_xlabel('Inference run number', fontsize=20)
+        ax.set_ylabel('Inference time [ms]', fontsize=20)
+        ax.tick_params(labelsize=20)
+        ax.grid(True, alpha=0.3, which='both')
+        ax.legend(fontsize=14)
+        
+        plt.tight_layout()
+        plt.show()
+        
+        return fig
+
+    def plot_accuracy_comparison(self, accuracy_results):
+        """
+        Plot bar chart comparing Keras vs Quantized model accuracy.
+        
+        Parameters:
+        -----------
+        accuracy_results : dict
+            Results from classifier.compare_model_accuracy()
+        """
+        if accuracy_results is None:
+            print("Error: No accuracy results provided!")
+            return
+        
+        has_keras = 'keras' in accuracy_results
+        has_quantized = 'quantized' in accuracy_results
+        
+        if not has_keras and not has_quantized:
+            print("Error: No model accuracy data available!")
+            return
+        
+        fig, ax = plt.subplots(figsize=(10, 6))
+        
+        models = []
+        accuracies = []
+        colors = []
+        
+        if has_keras:
+            models.append('Proposed classifier (FP32)')
+            accuracies.append(accuracy_results['keras']['accuracy'] * 100)
+            colors.append('tab:orange')
+        
+        if has_quantized:
+            models.append('Proposed classifier (INT8)')
+            accuracies.append(accuracy_results['quantized']['accuracy'] * 100)
+            colors.append('tab:blue')
+        
+        bars = ax.bar(models, accuracies, color=colors, width=0.6, 
+                     edgecolor='black', linewidth=1.5)
+        
+        # Add horizontal line for proposed classifier accuracy
+        if has_keras:
+            ax.axhline(accuracies[0], color='black', linestyle='--', lw=2, 
+                      label=f'Proposed classifier (FP32)')
+            ax.text(0, accuracies[0] - 2, f'{accuracies[0]:.2f}', 
+                   fontsize=20, verticalalignment='center', horizontalalignment='left')
+        
+        # Add horizontal line for random classifier
+        ax.axhline(50, color='grey', linestyle='--', lw=2, 
+                  label=f'Random classifier')
+        
+        # Add value labels on bars
+        for i, (bar, acc) in enumerate(zip(bars, accuracies)):
+            height = bar.get_height()
+            if i == len(bars) - 1:  # Last bar (quantized)
+                xytext = (0, 10)  # Place above
+            else:
+                xytext = (0, -20)  # Place below
+            ax.annotate(f'{acc:.2f}',
+                       xy=(bar.get_x() + bar.get_width() / 2, height),
+                       xytext=xytext,
+                       textcoords="offset points",
+                       ha='center', va='bottom', fontsize=20, fontweight='bold')
+        
+        # Add accuracy difference annotation
+        if 'comparison' in accuracy_results:
+            diff = accuracy_results['comparison']['accuracy_difference'] * 100
+            if abs(diff) < 0.01:
+                diff_text = 'Same accuracy'
+            else:
+                better = 'Proposed classifier (FP32)' if diff > 0 else 'Proposed classifier (INT8)'
+                diff_text = f'{better} is {abs(diff):.2f}% more accurate'
+            ax.text(0.5, 0.95, diff_text,
+                   transform=ax.transAxes, ha='center', va='top', fontsize=18,
+                   bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+        
+        ax.set_ylabel('Accuracy [%]', fontsize=20)
+        ax.set_xlabel('Model Type', fontsize=20)
+        ax.legend(loc='lower right', fontsize=16)
+        ax.grid(True, alpha=0.3)
+        ax.set_ylim([0, 105])
+        ax.tick_params(labelsize=20)
+        
+        plt.tight_layout()
+        plt.show()
+        
+        return fig
+
+    def plot_multi_snr_accuracy_comparison(self, keras_results, quantized_results, snr_values):
+        """
+        Plot accuracy vs SNR comparing Keras and Quantized models.
+        
+        Parameters:
+        -----------
+        keras_results : dict
+            Accuracy results for Keras model at different SNR levels
+        quantized_results : dict
+            Accuracy results for Quantized model at different SNR levels
+        snr_values : list
+            List of SNR values tested
+        """
+        keras_accs = [keras_results.get(snr, 0) for snr in snr_values]
+        quant_accs = [quantized_results.get(snr, 0) for snr in snr_values]
+        
+        data_series = [
+            (keras_accs, 'Proposed classifier (FP32)', 'tab:orange'),
+            (quant_accs, 'Proposed classifier (INT8)', 'tab:blue')
+        ]
+        
+        original_values = {}
+        if 'original' in keras_results:
+            original_values['keras'] = keras_results['original']
+        if 'original' in quantized_results:
+            original_values['quantized'] = quantized_results['original']
+        
+        fig = self.multi_snr_plot(snr_values, data_series, 'Accuracy', [0.45, 1.05], original_values)
+        
+        return fig
+
+    def plot_multi_snr_auc_comparison(self, keras_results, quantized_results, snr_values):
+        """
+        Plot AUC vs SNR comparing Keras and Quantized models.
+        
+        Parameters:
+        -----------
+        keras_results : dict
+            AUC results for Keras model at different SNR levels
+        quantized_results : dict
+            AUC results for Quantized model at different SNR levels
+        snr_values : list
+            List of SNR values tested
+        """
+        keras_aucs = [keras_results.get(snr, 0) for snr in snr_values]
+        quant_aucs = [quantized_results.get(snr, 0) for snr in snr_values]
+        
+        data_series = [
+            (keras_aucs, 'Proposed classifier (FP32)', 'tab:orange'),
+            (quant_aucs, 'Proposed classifier (INT8)', 'tab:blue')
+        ]
+        
+        original_values = {}
+        if 'original' in keras_results:
+            original_values['keras'] = keras_results['original']
+        if 'original' in quantized_results:
+            original_values['quantized'] = quantized_results['original']
+        
+        fig = self.multi_snr_plot(snr_values, data_series, 'AUC', [0.45, 1.05], original_values)
+        
+        return fig
+
+    def plot_comprehensive_model_comparison(self, size_results, inference_results, accuracy_results):
+        """
+        Create a comprehensive 2x2 subplot comparing all aspects of FP32 vs INT8 models.
+        
+        Parameters:
+        -----------
+        size_results : dict
+            Results from classifier.get_model_size()
+        inference_results : dict
+            Results from classifier.profile_inference()
+        accuracy_results : dict
+            Results from classifier.compare_model_accuracy()
+        """
+        fig, axes = plt.subplots(2, 2, figsize=(14, 12))
+        
+        colors = {'keras': 'tab:orange', 'quantized': 'tab:blue'}
+        
+        # Top-left: Model Size
+        ax1 = axes[0, 0]
+        if size_results and 'quantized' in size_results:
+            models = ['Proposed classifier (FP32)', 'Proposed classifier (INT8)']
+            sizes = [size_results['keras']['disk_kb'], size_results['quantized']['disk_kb']]
+            bars = ax1.bar(models, sizes, color=[colors['keras'], colors['quantized']], 
+                          width=0.6, edgecolor='black', linewidth=1.5)
+            for bar, size in zip(bars, sizes):
+                ax1.annotate(f'{size:.2f} KB', xy=(bar.get_x() + bar.get_width()/2, bar.get_height()),
+                           xytext=(0, 5), textcoords="offset points", ha='center', fontsize=16, fontweight='bold')
+            if 'comparison' in size_results:
+                ax1.set_title(f'Model Size ({size_results["comparison"]["compression_ratio"]:.2f}× compression)', fontsize=20)
+            else:
+                ax1.set_title('Model Size', fontsize=20)
+        else:
+            ax1.text(0.5, 0.5, 'No quantized model\ndata available', ha='center', va='center', fontsize=16)
+            ax1.set_title('Model Size', fontsize=20)
+        ax1.set_ylabel('Size [KB]', fontsize=20)
+        ax1.tick_params(labelsize=18)
+        ax1.grid(True, alpha=0.3, axis='y')
+        
+        # Top-right: Inference Time
+        ax2 = axes[0, 1]
+        if inference_results:
+            models = []
+            times = []
+            stds = []
+            bar_colors = []
+            if 'keras' in inference_results:
+                models.append('Proposed classifier (FP32)')
+                times.append(inference_results['keras']['mean_ms'])
+                stds.append(inference_results['keras']['std_ms'])
+                bar_colors.append(colors['keras'])
+            if 'quantized' in inference_results:
+                models.append('Proposed classifier (INT8)')
+                times.append(inference_results['quantized']['mean_ms'])
+                stds.append(inference_results['quantized']['std_ms'])
+                bar_colors.append(colors['quantized'])
+            
+            bars = ax2.bar(models, times, yerr=stds, capsize=6, color=bar_colors,
+                          width=0.6, edgecolor='black', linewidth=1.5)
+            for bar, t in zip(bars, times):
+                ax2.annotate(f'{t:.3f} ms', xy=(bar.get_x() + bar.get_width()/2, bar.get_height()),
+                           xytext=(0, 10), textcoords="offset points", ha='center', fontsize=16, fontweight='bold')
+            if 'comparison' in inference_results:
+                ax2.set_title(f'Inference Time ({inference_results["comparison"]["speedup"]:.2f}× speedup)', fontsize=20)
+            else:
+                ax2.set_title('Inference Time', fontsize=20)
+        else:
+            ax2.text(0.5, 0.5, 'No inference data\navailable', ha='center', va='center', fontsize=16)
+            ax2.set_title('Inference Time', fontsize=20)
+        ax2.set_ylabel('Time [ms]', fontsize=20)
+        ax2.tick_params(labelsize=18)
+        ax2.grid(True, alpha=0.3, axis='y')
+        
+        # Bottom-left: Accuracy
+        ax3 = axes[1, 0]
+        if accuracy_results:
+            models = []
+            accs = []
+            bar_colors = []
+            if 'keras' in accuracy_results:
+                models.append('Proposed classifier (FP32)')
+                accs.append(accuracy_results['keras']['accuracy'] * 100)
+                bar_colors.append(colors['keras'])
+            if 'quantized' in accuracy_results:
+                models.append('Proposed classifier (INT8)')
+                accs.append(accuracy_results['quantized']['accuracy'] * 100)
+                bar_colors.append(colors['quantized'])
+            
+            bars = ax3.bar(models, accs, color=bar_colors, width=0.6, edgecolor='black', linewidth=1.5)
+            for bar, acc in zip(bars, accs):
+                ax3.annotate(f'{acc:.2f}%', xy=(bar.get_x() + bar.get_width()/2, bar.get_height()),
+                           xytext=(0, 5), textcoords="offset points", ha='center', fontsize=16, fontweight='bold')
+            ax3.axhline(50, color='grey', linestyle='--', lw=2, alpha=0.5)
+            ax3.set_ylim([0, 105])
+            ax3.set_title('Classification Accuracy', fontsize=20)
+        else:
+            ax3.text(0.5, 0.5, 'No accuracy data\navailable', ha='center', va='center', fontsize=16)
+            ax3.set_title('Classification Accuracy', fontsize=20)
+        ax3.set_ylabel('Accuracy [%]', fontsize=20)
+        ax3.tick_params(labelsize=18)
+        ax3.grid(True, alpha=0.3, axis='y')
+        
+        # Bottom-right: Parameters (FP32 only since quantized doesn't have same metric)
+        ax4 = axes[1, 1]
+        if size_results and 'keras' in size_results:
+            params_data = {
+                'Trainable': size_results['keras'].get('trainable_params', 0),
+                'Non-trainable': size_results['keras'].get('non_trainable_params', 0)
+            }
+            total = sum(params_data.values())
+            if total > 0:
+                wedges, texts, autotexts = ax4.pie(params_data.values(), labels=params_data.keys(),
+                                                   autopct='%1.1f%%', colors=['#64B5F6', '#81C784'],
+                                                   textprops={'fontsize': 16})
+                ax4.set_title(f'Parameters Distribution\n(Total: {total:,})', fontsize=20)
+            else:
+                ax4.text(0.5, 0.5, 'No parameter data\navailable', ha='center', va='center', fontsize=16)
+                ax4.set_title('Parameters Distribution', fontsize=20)
+        else:
+            ax4.text(0.5, 0.5, 'No size data\navailable', ha='center', va='center', fontsize=16)
+            ax4.set_title('Parameters Distribution', fontsize=20)
+        
+        plt.tight_layout()
+        plt.show()
+        
+        return fig
