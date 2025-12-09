@@ -1,0 +1,72 @@
+import numpy as np
+import os
+import matplotlib.pyplot as plt
+
+class PiemsolConditioner:
+    def __init__(self, cfg):
+        self.cfg = cfg
+        
+    def add_noise(self, time, data, late_time, snr_db):
+        if isinstance(time, list):
+            time = time[0]
+        
+        if hasattr(time, 'ndim') and time.ndim > 1:
+            time = time[0]
+        
+        print(f"Time range: {time[0]:.6e} to {time[-1]:.6e}")
+        
+        if late_time < time[0]:
+            raise ValueError("late_time must be within the range of time array")
+        if late_time > time[-1]:
+            raise ValueError("late_time must be within the range of time array")
+
+        idx = np.where(time >= late_time)[0]
+        if len(idx) == 0:
+            raise ValueError("late_time is beyond the maximum time in the array")
+        idx = idx[0]
+
+        x_mean = np.mean(data[idx:])
+        signal_power = np.mean((data[idx:] - x_mean)**2)
+        snr_linear = 10**(snr_db / 10)
+        noise_power = signal_power / snr_linear
+        noise_std = np.sqrt(noise_power)
+
+        noise = np.random.normal(0, noise_std, size=data.shape)
+        return data + noise
+        
+
+    def amplify(self, time, data, time_gain):
+        if isinstance(time, list):
+            time = time[0]
+        
+        if hasattr(time, 'ndim') and time.ndim > 1:
+            time = time[0]
+        
+        time_gain = np.array(time_gain)
+        if time_gain.size > 0:
+            time_gain = time_gain[np.argsort(time_gain[:, 0])]
+        gain = np.ones_like(time)
+        for t, g in time_gain:
+            mask = time >= t
+            gain[mask] = g
+        return data * gain
+
+    def normalize(self, data):
+        return (data - np.min(data)) / (np.max(data) - np.min(data) + 1e-10)
+
+    def quantize(self, data, depth, dtype):
+        data = self.normalize(data)
+        return (np.round(data * 2**depth)).astype(dtype)
+    
+    def condition_dataset(self, I_0, time):
+        time = time[-1024:]
+        if I_0.ndim > 1:
+            I_0 = I_0[:, -1024:]
+        else:
+            I_0 = I_0[-1024:]
+        v_0 = np.clip(I_0,  1e-10, 0.7)
+        v_1 = 0.2*np.log10(v_0/1e-6)
+        v_2 = np.clip(v_1, 0, 3.3)
+        v_3 = self.quantize(v_2, depth=8, dtype=np.uint16)
+
+        return v_3, time

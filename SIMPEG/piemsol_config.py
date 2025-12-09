@@ -3,8 +3,7 @@ import os
 import numpy as np
 from typing import Dict, Any, Optional
 
-
-class PiConfig:
+class PiemsolConfig:
     def __init__(self, config_path: str = 'config.json'):
         self.config_path = config_path
         self._load_config()
@@ -167,9 +166,8 @@ class PiConfig:
     def __repr__(self) -> str:
         return f"TDEMConfig(config_path='{self.config_path}')"
 
-
 if __name__ == "__main__":
-    config = PiConfig('config.json')
+    config = PiemsolConfig('config.json')
     print(config.summary())
     print(f"\nTarget center: {config.target_center}")
     print(f"Time channels shape: {config.get_time_channels().shape}")

@@ -4,8 +4,7 @@ import os
 from typing import Dict, Any, Tuple, List, Optional
 from datetime import datetime
 
-
-class PiLogger:
+class PiemsolLogger:
     
     def __init__(self):
         pass
@@ -90,7 +89,7 @@ class PiLogger:
                     
                 except (OSError, KeyError) as e:
                     skipped_indices.append(i)
-                    print(f"Warning: Skipping missing/corrupted simulation_{i}: {e}")
+                    print(f"Warning: SkipPiemsolng missing/corrupted simulation_{i}: {e}")
                     continue
             
             if skipped_indices:

@@ -6,10 +6,9 @@ import os
 import h5py
 from datetime import datetime
 
-from pi_plotter import ClassifierPlotter
+from piemsol_plotter import ClassifierPlotter
 
-
-class PiClassifier():
+class PiemsolClassifier():
     def __init__(self, conditioner=None):
         self.model = None
         self.conditioner = conditioner
@@ -58,7 +57,7 @@ class PiClassifier():
         return model_path
     
     def load_quantized_model(self, model_path):
-        """Load a quantized TFLite model for inference."""
+        
         print("\n" + "="*70)
         print("Loading Quantized TFLite Model")
         print("="*70)
@@ -66,11 +65,9 @@ class PiClassifier():
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Model file not found: {model_path}")
         
-        # Load TFLite model
         self.tflite_interpreter = tf.lite.Interpreter(model_path=model_path)
         self.tflite_interpreter.allocate_tensors()
         
-        # Get input/output details
         self.tflite_input_details = self.tflite_interpreter.get_input_details()
         self.tflite_output_details = self.tflite_interpreter.get_output_details()
         
@@ -78,7 +75,6 @@ class PiClassifier():
         input_dtype = self.tflite_input_details[0]['dtype']
         output_shape = self.tflite_output_details[0]['shape']
         
-        # Get model size
         model_size = os.path.getsize(model_path)
         
         print(f"✓ Quantized model loaded from: {model_path}")
@@ -91,14 +87,13 @@ class PiClassifier():
         return self.tflite_interpreter
     
     def predict_quantized(self, X):
-        """Run inference using the quantized TFLite model."""
+        
         if not hasattr(self, 'tflite_interpreter') or self.tflite_interpreter is None:
             raise ValueError("No quantized model loaded. Load a TFLite model first.")
         
         input_details = self.tflite_input_details[0]
         output_details = self.tflite_output_details[0]
         
-        # Handle quantization parameters if using integer quantization
         input_scale = input_details.get('quantization_parameters', {}).get('scales', [1.0])
         input_zero_point = input_details.get('quantization_parameters', {}).get('zero_points', [0])
         
@@ -107,7 +102,6 @@ class PiClassifier():
         for i in range(len(X)):
             sample = X[i:i+1].astype(np.float32)
             
-            # Quantize input if needed
             if input_details['dtype'] == np.int8:
                 if len(input_scale) > 0 and input_scale[0] != 0:
                     sample = sample / input_scale[0] + input_zero_point[0]
@@ -117,7 +111,6 @@ class PiClassifier():
             self.tflite_interpreter.invoke()
             output = self.tflite_interpreter.get_tensor(output_details['index'])
             
-            # Dequantize output if needed
             if output_details['dtype'] == np.int8:
                 output_scale = output_details.get('quantization_parameters', {}).get('scales', [1.0])
                 output_zero_point = output_details.get('quantization_parameters', {}).get('zero_points', [0])
@@ -129,20 +122,11 @@ class PiClassifier():
         return np.array(predictions)
     
     def has_quantized_model(self):
-        """Check if a quantized model is loaded."""
+        
         return hasattr(self, 'tflite_interpreter') and self.tflite_interpreter is not None
 
     def get_model_size(self, model_path=None):
-        """
-        Get the size of a Keras model in memory and on disk.
         
-        Model size calculation:
-        - On disk: Direct file size measurement
-        - In memory: Sum of all weight arrays' sizes (nbytes = elements * bytes_per_element)
-        - Parameters are typically stored as float32 (4 bytes) or float16 (2 bytes)
-        
-        Returns dict with sizes in bytes, KB, and MB.
-        """
         import tempfile
         import io
         
@@ -156,12 +140,10 @@ class PiClassifier():
         
         results = {}
         
-        # Method 1: Count parameters and multiply by dtype size
         total_params = self.model.count_params()
         trainable_params = sum(np.prod(w.shape) for w in self.model.trainable_weights)
         non_trainable_params = sum(np.prod(w.shape) for w in self.model.non_trainable_weights)
         
-        # Get actual memory size by summing weight arrays
         memory_size_bytes = sum(w.numpy().nbytes for w in self.model.weights)
         
         results['keras'] = {
@@ -173,7 +155,6 @@ class PiClassifier():
             'memory_mb': memory_size_bytes / (1024 * 1024),
         }
         
-        # Method 2: Save to temp file to get actual serialized size
         import tempfile
         import os
         fd, tmp_path = tempfile.mkstemp(suffix='.keras')
@@ -199,7 +180,6 @@ class PiClassifier():
         print(f"    - {results['keras']['disk_kb']:.2f} KB")
         print(f"    - {results['keras']['disk_mb']:.4f} MB")
         
-        # If quantized model is loaded, compare
         if self.has_quantized_model():
             quant_size = os.path.getsize(self.quantized_model_path)
             results['quantized'] = {
@@ -224,154 +204,150 @@ class PiClassifier():
                 'size_reduction_percent': (1 - 1/compression_ratio) * 100
             }
             
-            # Generate comparison plot
             self.plotter.plot_model_size_comparison(results)
         
         return results
 
-    def profile_inference(self, X_sample=None, num_runs=100, warmup_runs=10, show_plot=True):
-        """
-        Profile inference time for both Keras and quantized models.
+    def profile_inference(self, X_sample=None, batch_size=1000, num_batches=10, warmup_batches=2, show_plot=True):
         
-        Measures actual wall-clock time for forward propagation.
-        Uses multiple runs to get statistically meaningful results.
-        
-        Parameters:
-        -----------
-        X_sample : np.ndarray, optional
-            Input sample for inference. If None, creates a random sample.
-        num_runs : int
-            Number of inference runs for timing (default: 100)
-        warmup_runs : int
-            Number of warmup runs before timing (default: 10)
-        
-        Returns dict with timing statistics.
-        """
         import time
         
         print("\n" + "="*70)
-        print("Inference Profiling")
+        print("Inference Profiling (Batch-based)")
         print("="*70)
-        print(f"Number of runs: {num_runs}")
-        print(f"Warmup runs: {warmup_runs}")
+        print(f"Batch size: {batch_size} samples")
+        print(f"Number of batches: {num_batches}")
+        print(f"Warmup batches: {warmup_batches}")
+        print(f"Total samples per measurement: {batch_size * num_batches}")
         
         results = {}
         
-        # Create sample input if not provided
-        if X_sample is None:
-            if self.model is not None:
-                input_shape = self.model.input_shape[1:]
-                X_sample = np.random.randn(1, *input_shape).astype(np.float32)
-            elif self.has_quantized_model():
-                input_shape = self.tflite_input_details[0]['shape'][1:]
-                X_sample = np.random.randn(1, *input_shape).astype(np.float32)
-            else:
-                print("Error: No model loaded.")
-                return None
-        
-        # Ensure correct shape
-        if X_sample.ndim == 2:
-            X_sample = X_sample.reshape(1, X_sample.shape[0], X_sample.shape[1])
-        elif X_sample.ndim == 1:
-            X_sample = X_sample.reshape(1, -1, 1)
-        
-        print(f"Input shape: {X_sample.shape}")
-        
-        # Profile Keras model
         if self.model is not None:
-            print(f"\n⏱️  Profiling Keras Model...")
+            input_shape = self.model.input_shape[1:]
+        elif self.has_quantized_model():
+            input_shape = self.tflite_input_details[0]['shape'][1:]
+        else:
+            print("Error: No model loaded.")
+            return None
+        
+        X_batch = np.random.randn(batch_size, *input_shape).astype(np.float32)
+        print(f"Batch input shape: {X_batch.shape}")
+        
+        if self.model is not None:
+            print(f"\nProfiling Keras Model (FP32) - Batch inference...")
+            import tensorflow as tf
+            X_tensor = tf.constant(X_batch, dtype=tf.float32)
             
-            # Warmup
-            for _ in range(warmup_runs):
-                _ = self.model.predict(X_sample, verbose=0)
+            for _ in range(warmup_batches):
+                _ = self.model(X_tensor, training=False)
             
-            # Timed runs
-            keras_times = []
-            for _ in range(num_runs):
+            keras_batch_times = []
+            for _ in range(num_batches):
                 start = time.perf_counter()
-                _ = self.model.predict(X_sample, verbose=0)
+                _ = self.model(X_tensor, training=False)
                 end = time.perf_counter()
-                keras_times.append((end - start) * 1000)  # Convert to ms
+                batch_time_ms = (end - start) * 1000
+                keras_batch_times.append(batch_time_ms)
+            
+            keras_per_sample_times = [t / batch_size for t in keras_batch_times]
             
             results['keras'] = {
-                'mean_ms': np.mean(keras_times),
-                'std_ms': np.std(keras_times),
-                'min_ms': np.min(keras_times),
-                'max_ms': np.max(keras_times),
-                'median_ms': np.median(keras_times),
-                'all_times_ms': keras_times
+                'mean_ms': np.mean(keras_per_sample_times),
+                'std_ms': np.std(keras_per_sample_times),
+                'min_ms': np.min(keras_per_sample_times),
+                'max_ms': np.max(keras_per_sample_times),
+                'median_ms': np.median(keras_per_sample_times),
+                'all_times_ms': keras_per_sample_times,
+                'batch_times_ms': keras_batch_times,
+                'batch_size': batch_size
             }
             
-            print(f"  Mean:   {results['keras']['mean_ms']:.4f} ms")
-            print(f"  Std:    {results['keras']['std_ms']:.4f} ms")
-            print(f"  Min:    {results['keras']['min_ms']:.4f} ms")
-            print(f"  Max:    {results['keras']['max_ms']:.4f} ms")
-            print(f"  Median: {results['keras']['median_ms']:.4f} ms")
+            print(f"  Per-sample inference time:")
+            print(f"    Mean:   {results['keras']['mean_ms']:.6f} ms")
+            print(f"    Std:    {results['keras']['std_ms']:.6f} ms")
+            print(f"    Min:    {results['keras']['min_ms']:.6f} ms")
+            print(f"    Max:    {results['keras']['max_ms']:.6f} ms")
+            print(f"    Median: {results['keras']['median_ms']:.6f} ms")
+            print(f"  Batch inference time (mean): {np.mean(keras_batch_times):.4f} ms for {batch_size} samples")
         
-        # Profile TFLite model
         if self.has_quantized_model():
-            print(f"\n⏱️  Profiling Quantized (TFLite) Model...")
+            print(f"\nProfiling Quantized (TFLite/INT8) Model - Batch inference...")
             
             input_details = self.tflite_input_details[0]
             output_details = self.tflite_output_details[0]
             
-            # Prepare input
-            sample = X_sample.astype(np.float32)
+            original_input_shape = input_details['shape'].copy()
+            batch_input_shape = [batch_size] + list(original_input_shape[1:])
+            self.tflite_interpreter.resize_tensor_input(input_details['index'], batch_input_shape)
+            self.tflite_interpreter.allocate_tensors()
+            
+            input_details = self.tflite_interpreter.get_input_details()[0]
+            output_details = self.tflite_interpreter.get_output_details()[0]
+            
+            X_batch_tflite = X_batch.copy()
             if input_details['dtype'] == np.int8:
                 input_scale = input_details.get('quantization_parameters', {}).get('scales', [1.0])
                 input_zero_point = input_details.get('quantization_parameters', {}).get('zero_points', [0])
                 if len(input_scale) > 0 and input_scale[0] != 0:
-                    sample = sample / input_scale[0] + input_zero_point[0]
-                sample = sample.astype(np.int8)
+                    X_batch_tflite = X_batch_tflite / input_scale[0] + input_zero_point[0]
+                X_batch_tflite = np.clip(X_batch_tflite, -128, 127).astype(np.int8)
             
-            # Warmup
-            for _ in range(warmup_runs):
-                self.tflite_interpreter.set_tensor(input_details['index'], sample)
+            for _ in range(warmup_batches):
+                self.tflite_interpreter.set_tensor(input_details['index'], X_batch_tflite)
                 self.tflite_interpreter.invoke()
             
-            # Timed runs
-            tflite_times = []
-            for _ in range(num_runs):
+            tflite_batch_times = []
+            for batch_idx in range(num_batches):
                 start = time.perf_counter()
-                self.tflite_interpreter.set_tensor(input_details['index'], sample)
+                self.tflite_interpreter.set_tensor(input_details['index'], X_batch_tflite)
                 self.tflite_interpreter.invoke()
                 _ = self.tflite_interpreter.get_tensor(output_details['index'])
                 end = time.perf_counter()
-                tflite_times.append((end - start) * 1000)  # Convert to ms
+                batch_time_ms = (end - start) * 1000
+                tflite_batch_times.append(batch_time_ms)
+            
+            self.tflite_interpreter.resize_tensor_input(
+                self.tflite_input_details[0]['index'], list(original_input_shape)
+            )
+            self.tflite_interpreter.allocate_tensors()
+            
+            tflite_per_sample_times = [t / batch_size for t in tflite_batch_times]
             
             results['quantized'] = {
-                'mean_ms': np.mean(tflite_times),
-                'std_ms': np.std(tflite_times),
-                'min_ms': np.min(tflite_times),
-                'max_ms': np.max(tflite_times),
-                'median_ms': np.median(tflite_times),
-                'all_times_ms': tflite_times
+                'mean_ms': np.mean(tflite_per_sample_times),
+                'std_ms': np.std(tflite_per_sample_times),
+                'min_ms': np.min(tflite_per_sample_times),
+                'max_ms': np.max(tflite_per_sample_times),
+                'median_ms': np.median(tflite_per_sample_times),
+                'all_times_ms': tflite_per_sample_times,
+                'batch_times_ms': tflite_batch_times,
+                'batch_size': batch_size
             }
             
-            print(f"  Mean:   {results['quantized']['mean_ms']:.4f} ms")
-            print(f"  Std:    {results['quantized']['std_ms']:.4f} ms")
-            print(f"  Min:    {results['quantized']['min_ms']:.4f} ms")
-            print(f"  Max:    {results['quantized']['max_ms']:.4f} ms")
-            print(f"  Median: {results['quantized']['median_ms']:.4f} ms")
+            print(f"  Per-sample inference time:")
+            print(f"    Mean:   {results['quantized']['mean_ms']:.6f} ms")
+            print(f"    Std:    {results['quantized']['std_ms']:.6f} ms")
+            print(f"    Min:    {results['quantized']['min_ms']:.6f} ms")
+            print(f"    Max:    {results['quantized']['max_ms']:.6f} ms")
+            print(f"    Median: {results['quantized']['median_ms']:.6f} ms")
+            print(f"  Batch inference time (mean): {np.mean(tflite_batch_times):.4f} ms for {batch_size} samples")
         
-        # Comparison
         if 'keras' in results and 'quantized' in results:
             speedup = results['keras']['mean_ms'] / results['quantized']['mean_ms']
-            print(f"\n📊 Comparison:")
-            print(f"  Speedup (Quantized vs Keras): {speedup:.2f}x")
-            print(f"  {'Quantized is faster' if speedup > 1 else 'Keras is faster'}")
+            print(f"\n📊 Comparison (per-sample):")
+            print(f"  Keras (FP32):     {results['keras']['mean_ms']:.6f} ms/sample")
+            print(f"  TFLite (INT8):    {results['quantized']['mean_ms']:.6f} ms/sample")
+            print(f"  Speedup (INT8 vs FP32): {speedup:.2f}x")
+            print(f"  {'INT8 is faster' if speedup > 1 else 'FP32 is faster'}")
             results['comparison'] = {'speedup': speedup}
         
-        # Generate comparison plot if both models are available
         if show_plot and ('keras' in results or 'quantized' in results):
             self.plotter.plot_inference_time_comparison(results)
         
         return results
 
     def compare_model_accuracy(self, X_test, y_test, show_plot=True):
-        """
-        Compare accuracy between Keras and quantized models.
-        """
+        
         from sklearn.metrics import accuracy_score, classification_report
         
         print("\n" + "="*70)
@@ -403,36 +379,30 @@ class PiClassifier():
             print(f"  {'Keras is more accurate' if acc_diff > 0 else 'Quantized is more accurate' if acc_diff < 0 else 'Same accuracy'}")
             results['comparison'] = {'accuracy_difference': acc_diff}
         
-        # Generate comparison plot if both models are available
         if show_plot and ('keras' in results or 'quantized' in results):
             self.plotter.plot_accuracy_comparison(results)
         
         return results
 
     def full_model_analysis(self, X_test=None, y_test=None, num_inference_runs=100):
-        """
-        Comprehensive model analysis including size, FLOPs, inference time, and accuracy.
-        """
+        
         print("\n" + "="*70)
         print("COMPREHENSIVE MODEL ANALYSIS")
         print("="*70)
         
         results = {}
         
-        # 1. Model Size Analysis (plot generated inside method if quantized available)
         print("\n" + "-"*70)
         print("1. MODEL SIZE ANALYSIS")
         print("-"*70)
         results['size'] = self.get_model_size()
         
-        # 2. FLOP Calculation
         if self.model is not None:
             print("\n" + "-"*70)
             print("2. COMPUTATIONAL COST (FLOPs)")
             print("-"*70)
             results['flops'] = self.calculate_flops(verbose=True)
         
-        # 3. Inference Profiling (plot generated inside method)
         print("\n" + "-"*70)
         print("3. INFERENCE TIME PROFILING")
         print("-"*70)
@@ -441,14 +411,12 @@ class PiClassifier():
             sample = X_test[0:1]
         results['inference'] = self.profile_inference(X_sample=sample, num_runs=num_inference_runs, show_plot=True)
         
-        # 4. Accuracy Comparison (plot generated inside method)
         if X_test is not None and y_test is not None:
             print("\n" + "-"*70)
             print("4. ACCURACY COMPARISON")
             print("-"*70)
             results['accuracy'] = self.compare_model_accuracy(X_test, y_test, show_plot=True)
         
-        # Summary
         print("\n" + "="*70)
         print("SUMMARY")
         print("="*70)
@@ -481,7 +449,6 @@ class PiClassifier():
             if 'quantized' in results['accuracy']:
                 print(f"  Quantized: {results['accuracy']['quantized']['accuracy']*100:.2f}%")
         
-        # Generate comprehensive comparison plot
         print("\n" + "-"*70)
         print("COMPREHENSIVE COMPARISON PLOT")
         print("-"*70)
@@ -502,7 +469,6 @@ class PiClassifier():
             if input_length is None:
                 raise ValueError("No model loaded and no input_length provided. "
                                "Either load a model or provide input_length.")
-            # Build a temporary model for FLOP calculation
             print("No model loaded. Building model for FLOP calculation...")
             self.build_model(input_length)
         
@@ -522,9 +488,6 @@ class PiClassifier():
             layer_flops = 0
             
             if isinstance(layer, layers.Conv1D):
-                # Conv1D FLOPs: 2 * K * C_in * C_out * L_out
-                # Where: K = kernel_size, C_in = input_channels, C_out = filters
-                # L_out = output_length, factor of 2 for multiply-add
                 kernel_size = layer.kernel_size[0]
                 in_channels = current_shape[-1]
                 out_channels = layer.filters
@@ -534,30 +497,24 @@ class PiClassifier():
                 else:  # 'valid'
                     out_length = current_shape[0] - kernel_size + 1
                 
-                # Multiply-adds (each is 2 FLOPs: 1 mult + 1 add)
                 layer_flops = 2 * kernel_size * in_channels * out_channels * out_length
                 
-                # Add bias if present
                 if layer.use_bias:
                     layer_flops += out_channels * out_length
                 
                 current_shape = [out_length, out_channels]
                 
             elif isinstance(layer, layers.BatchNormalization):
-                # BatchNorm FLOPs: 4 * elements (subtract mean, divide std, scale, shift)
                 num_elements = np.prod(current_shape)
                 layer_flops = 4 * num_elements
                 
             elif isinstance(layer, layers.MaxPooling1D) or isinstance(layer, layers.AveragePooling1D):
-                # Pooling FLOPs: comparisons for max, additions for average
                 pool_size = layer.pool_size[0] if hasattr(layer.pool_size, '__len__') else layer.pool_size
                 strides = layer.strides[0] if hasattr(layer.strides, '__len__') else layer.strides
                 
                 out_length = current_shape[0] // strides
                 num_channels = current_shape[-1]
                 
-                # Max pooling: (pool_size - 1) comparisons per output
-                # Average pooling: pool_size additions + 1 division per output
                 if isinstance(layer, layers.MaxPooling1D):
                     layer_flops = (pool_size - 1) * out_length * num_channels
                 else:
@@ -566,45 +523,37 @@ class PiClassifier():
                 current_shape = [out_length, num_channels]
                 
             elif isinstance(layer, layers.GlobalAveragePooling1D):
-                # GlobalAvgPool: sum all elements + divide
                 sequence_length = current_shape[0]
                 num_channels = current_shape[-1]
                 layer_flops = sequence_length * num_channels + num_channels  # additions + divisions
                 current_shape = [num_channels]
             
             elif isinstance(layer, layers.Flatten):
-                # Flatten: 0 FLOPs (just reshaping)
                 layer_flops = 0
                 current_shape = [np.prod(current_shape)]
                 
             elif isinstance(layer, layers.Dense):
-                # Dense FLOPs: 2 * input_size * output_size (multiply-add)
                 in_features = current_shape[-1] if isinstance(current_shape, list) else current_shape
                 out_features = layer.units
                 layer_flops = 2 * in_features * out_features
                 
-                # Add bias
                 if layer.use_bias:
                     layer_flops += out_features
                 
                 current_shape = [out_features]
                 
             elif isinstance(layer, layers.Dropout):
-                # Dropout: 0 FLOPs during inference (no-op)
                 layer_flops = 0
                 
             elif isinstance(layer, layers.InputLayer):
-                # Input: 0 FLOPs
                 layer_flops = 0
             
-            # Add activation FLOPs (ReLU: 1 comparison per element)
             if hasattr(layer, 'activation') and layer.activation is not None:
                 activation_name = layer.activation.__name__ if hasattr(layer.activation, '__name__') else str(layer.activation)
                 if activation_name == 'relu':
                     num_elements = np.prod(current_shape) if isinstance(current_shape, list) else current_shape
                     layer_flops += num_elements  # 1 comparison per element
                 elif activation_name == 'softmax':
-                    # Softmax: exp(x), sum, divide for each element
                     num_elements = np.prod(current_shape) if isinstance(current_shape, list) else current_shape
                     layer_flops += 3 * num_elements
             
@@ -623,13 +572,11 @@ class PiClassifier():
             print(f"{'TOTAL':<45} {'':<20} {total_flops:>12,}")
             print("="*70)
             
-            # Summary statistics
             print(f"\n📊 Summary:")
             print(f"  - Total FLOPs per inference: {total_flops:,}")
             print(f"  - Total MFLOPs: {total_flops / 1e6:.3f}")
             print(f"  - Total GFLOPs: {total_flops / 1e9:.6f}")
             
-            # Breakdown by layer type
             print(f"\n📈 FLOPs by Layer Type:")
             type_flops = {}
             for name, info in flops_breakdown.items():
@@ -665,10 +612,8 @@ class PiClassifier():
         print(f"  - Target present: {np.sum(labels == 1)}")
         print(f"  - Target absent: {np.sum(labels == 0)}")
         
-        # Shuffle indices
         indices = np.random.permutation(num_samples)
         
-        # Calculate split points
         train_end = int(num_samples * train_ratio)
         val_end = train_end + int(num_samples * val_ratio)
         
@@ -681,7 +626,6 @@ class PiClassifier():
         print(f"  - Validation: {len(val_idx)} samples ({len(val_idx)/num_samples*100:.1f}%)")
         print(f"  - Testing: {len(test_idx)} samples ({len(test_idx)/num_samples*100:.1f}%)")
         
-        # Store data in class (in memory)
         self.train_data = (
             time,
             decay_curves[train_idx],
@@ -706,7 +650,6 @@ class PiClassifier():
             {**metadata, 'num_simulations': len(test_idx)}
         )
         
-        # Prepare arrays for training - data should already be conditioned before split
         self.X_train = decay_curves[train_idx].reshape(len(train_idx), decay_curves.shape[1], 1)
         self.y_train = labels[train_idx]
         self.X_val = decay_curves[val_idx].reshape(len(val_idx), decay_curves.shape[1], 1)
@@ -716,13 +659,11 @@ class PiClassifier():
         
         print("\n✓ Dataset split complete! Data stored in memory.")
         
-        # Optional: Save to files
         if save_to_file:
             print("\nSaving split datasets to files...")
             base_dir = os.path.dirname(source_path)
             base_name = os.path.basename(source_path).replace('.h5', '')
             
-            # Save split files in the same directory as the source file
             train_path = os.path.join(base_dir, f"{base_name}_train.h5")
             val_path = os.path.join(base_dir, f"{base_name}_val.h5")
             test_path = os.path.join(base_dir, f"{base_name}_test.h5")
@@ -741,7 +682,6 @@ class PiClassifier():
         return None, None, None
     
     def _save_split_dataset(self, source_path, dest_path, indices, split_name):
-        # Ensure the destination directory exists
         dest_dir = os.path.dirname(os.path.abspath(dest_path))
         try:
             os.makedirs(dest_dir, exist_ok=True)
@@ -751,11 +691,9 @@ class PiClassifier():
         
         with h5py.File(source_path, 'r') as f_src:
             with h5py.File(dest_path, 'w') as f_dst:
-                # Copy metadata
                 metadata_group = f_dst.create_group('metadata')
                 src_meta = f_src['metadata']
                 
-                # Count target present/absent in this split
                 num_target_present = 0
                 num_target_absent = 0
                 for idx in indices:
@@ -776,23 +714,18 @@ class PiClassifier():
                 if 'has_magnetic_field' in src_meta.attrs:
                     metadata_group.attrs['has_magnetic_field'] = src_meta.attrs['has_magnetic_field']
                 
-                # Create simulations group
                 sims_group = f_dst.create_group('simulations')
                 
-                # Copy selected simulations
                 for new_idx, orig_idx in enumerate(indices):
                     src_sim = f_src[f'simulations/simulation_{orig_idx}']
                     dst_sim = sims_group.create_group(f'simulation_{new_idx}')
                     
-                    # Copy datasets
                     for key in src_sim.keys():
                         if isinstance(src_sim[key], h5py.Dataset):
                             src_sim.copy(key, dst_sim)
                         elif isinstance(src_sim[key], h5py.Group):
-                            # Handle nested groups (e.g., magnetic_field)
                             src_sim.copy(key, dst_sim)
                     
-                    # Copy attributes
                     for attr_name, attr_value in src_sim.attrs.items():
                         dst_sim.attrs[attr_name] = attr_value
         
@@ -822,12 +755,7 @@ class PiClassifier():
         x = layers.Dropout(0.4, name='drop4')(x)
         outputs = layers.Dense(2, activation='softmax', name='output')(x)
 
-        self.model = keras.Model(inputs, outputs, name='TDEM_Classifier')
-        
-        print("\n" + "="*70)
-        print("Model Architecture Summary")
-        print("="*70)
-        self.model.summary()
+        self.model = keras.Model(inputs, outputs, name='Classifier')
         
         return self.model
     
@@ -839,7 +767,6 @@ class PiClassifier():
         print(f"Training samples: {len(X_train)}")
         print(f"Target present: {np.sum(y_train == 1)}, Target absent: {np.sum(y_train == 0)}")
         
-        # One-hot encode labels for binary crossentropy
         y_train_onehot = keras.utils.to_categorical(y_train, num_classes=2)
         
         if X_val is not None and y_val is not None:
@@ -850,7 +777,7 @@ class PiClassifier():
             validation_data = None
         
         optimizer = keras.optimizers.Adam(learning_rate=0.0001)
-        self.model.compile(optimizer=optimizer,
+        self.model.comPiemsolle(optimizer=optimizer,
                            loss='binary_crossentropy',
                            metrics=['accuracy'])
         
@@ -875,7 +802,6 @@ class PiClassifier():
         
         print(f"Validation samples: {len(X_val)}")
         
-        # Convert labels to one-hot encoding for binary_crossentropy
         y_val_onehot = keras.utils.to_categorical(y_val, num_classes=2)
         
         val_loss, val_accuracy = self.model.evaluate(X_val, y_val_onehot, verbose=1)
@@ -890,7 +816,6 @@ class PiClassifier():
         
         print(f"Test samples: {len(X_test)}")
         
-        # Convert labels to one-hot encoding for binary_crossentropy
         y_test_onehot = keras.utils.to_categorical(y_test, num_classes=2)
         
         test_loss, test_accuracy = self.model.evaluate(X_test, y_test_onehot, verbose=1)
@@ -908,9 +833,7 @@ class PiClassifier():
         print("="*70)
         
         converter = tf.lite.TFLiteConverter.from_keras_model(self.model)
-        
         converter.optimizations = [tf.lite.Optimize.DEFAULT]
-        
         converter.target_spec.supported_types = [tf.int8]
         
         if representative_data is not None:
@@ -980,24 +903,7 @@ class PiClassifier():
         return self.plotter.plot_roc_multi_snr(self.model, logger, dataset_paths, snr_values)
     
     def plot_roc_multi_snr_noise(self, time, X_test, y_test, snr_values, late_time, use_quantized=False):
-        """
-        Plot ROC curves for multiple SNR values by adding noise in memory.
         
-        Parameters:
-        -----------
-        time : np.ndarray
-            Time array for the decay curves
-        X_test : np.ndarray
-            Test data (decay curves reshaped for model input)
-        y_test : np.ndarray
-            Test labels
-        snr_values : list
-            List of SNR values in dB to test
-        late_time : float
-            Late time value for noise calculation
-        use_quantized : bool
-            Whether to use quantized (TFLite) model for inference
-        """
         if use_quantized:
             if not self.has_quantized_model():
                 raise ValueError("No quantized model loaded. Load a TFLite model first.")
@@ -1023,9 +929,7 @@ class PiClassifier():
         )
     
     def plot_multi_snr_confusion_and_distribution(self, time, X_test, y_test, snr_values, late_time, use_quantized=False):
-        """
-        Plot confusion matrices and prediction distributions for multiple SNR values.
-        """
+        
         if use_quantized:
             if not self.has_quantized_model():
                 raise ValueError("No quantized model loaded. Load a TFLite model first.")
@@ -1051,9 +955,7 @@ class PiClassifier():
         )
     
     def plot_multi_snr_accuracy(self, time, X_test, y_test, snr_values, late_time, use_quantized=False):
-        """
-        Plot accuracy as a function of SNR.
-        """
+        
         if use_quantized:
             if not self.has_quantized_model():
                 raise ValueError("No quantized model loaded. Load a TFLite model first.")
@@ -1079,9 +981,7 @@ class PiClassifier():
         )
     
     def plot_multi_snr_auc(self, time, X_test, y_test, snr_values, late_time, use_quantized=False):
-        """
-        Plot AUC as a function of SNR.
-        """
+        
         if use_quantized:
             if not self.has_quantized_model():
                 raise ValueError("No quantized model loaded. Load a TFLite model first.")
@@ -1107,9 +1007,7 @@ class PiClassifier():
         )
 
     def plot_multi_snr_accuracy_comparison(self, time, X_test, y_test, snr_values, late_time):
-        """
-        Plot accuracy vs SNR comparing both Keras and Quantized models.
-        """
+        
         if self.model is None:
             raise ValueError("No Keras model loaded. Train or load a model first.")
         if not self.has_quantized_model():
@@ -1119,14 +1017,12 @@ class PiClassifier():
         print("Multi-SNR Accuracy Comparison: Keras vs Quantized")
         print("="*70)
         
-        # Collect Keras results
         print("\n--- Keras Model ---")
         keras_results = self._compute_multi_snr_accuracy(
             model=self.model, time=time, X_test=X_test, y_test=y_test,
             snr_values=snr_values, late_time=late_time, use_quantized=False
         )
         
-        # Collect Quantized results
         print("\n--- Quantized Model ---")
         quantized_results = self._compute_multi_snr_accuracy(
             model=None, time=time, X_test=X_test, y_test=y_test,
@@ -1134,15 +1030,12 @@ class PiClassifier():
             tflite_predict_fn=self.predict_quantized
         )
         
-        # Generate comparison plot
         self.plotter.plot_multi_snr_accuracy_comparison(keras_results, quantized_results, snr_values)
         
         return {'keras': keras_results, 'quantized': quantized_results}
 
     def plot_multi_snr_auc_comparison(self, time, X_test, y_test, snr_values, late_time):
-        """
-        Plot AUC vs SNR comparing both Keras and Quantized models.
-        """
+        
         if self.model is None:
             raise ValueError("No Keras model loaded. Train or load a model first.")
         if not self.has_quantized_model():
@@ -1152,14 +1045,12 @@ class PiClassifier():
         print("Multi-SNR AUC Comparison: Keras vs Quantized")
         print("="*70)
         
-        # Collect Keras results
         print("\n--- Keras Model ---")
         keras_results = self._compute_multi_snr_auc(
             model=self.model, time=time, X_test=X_test, y_test=y_test,
             snr_values=snr_values, late_time=late_time, use_quantized=False
         )
         
-        # Collect Quantized results
         print("\n--- Quantized Model ---")
         quantized_results = self._compute_multi_snr_auc(
             model=None, time=time, X_test=X_test, y_test=y_test,
@@ -1167,14 +1058,13 @@ class PiClassifier():
             tflite_predict_fn=self.predict_quantized
         )
         
-        # Generate comparison plot
         self.plotter.plot_multi_snr_auc_comparison(keras_results, quantized_results, snr_values)
         
         return {'keras': keras_results, 'quantized': quantized_results}
 
     def _compute_multi_snr_accuracy(self, model, time, X_test, y_test, snr_values, late_time, 
                                      use_quantized=False, tflite_predict_fn=None):
-        """Helper method to compute accuracy at different SNR levels."""
+        
         from sklearn.metrics import roc_curve, auc
         
         if X_test.ndim == 3:
@@ -1184,7 +1074,6 @@ class PiClassifier():
         
         results = {}
         
-        # Process Original (no noise)
         print(f"Processing Original (no noise)...")
         X_input = decay_curves_orig.reshape(len(decay_curves_orig), -1, 1)
         
@@ -1203,7 +1092,6 @@ class PiClassifier():
         results['original'] = accuracy_original
         print(f"  Accuracy = {accuracy_original:.4f}")
         
-        # Process each SNR value
         for snr in snr_values:
             print(f"Processing SNR = {snr} dB...")
             
@@ -1229,7 +1117,7 @@ class PiClassifier():
 
     def _compute_multi_snr_auc(self, model, time, X_test, y_test, snr_values, late_time,
                                 use_quantized=False, tflite_predict_fn=None):
-        """Helper method to compute AUC at different SNR levels."""
+        
         from sklearn.metrics import roc_curve, auc
         
         if X_test.ndim == 3:
@@ -1239,7 +1127,6 @@ class PiClassifier():
         
         results = {}
         
-        # Process Original (no noise)
         print(f"Processing Original (no noise)...")
         X_input = decay_curves_orig.reshape(len(decay_curves_orig), -1, 1)
         
@@ -1258,7 +1145,6 @@ class PiClassifier():
         results['original'] = auc_original
         print(f"  AUC = {auc_original:.4f}")
         
-        # Process each SNR value
         for snr in snr_values:
             print(f"Processing SNR = {snr} dB...")
             
@@ -1309,76 +1195,7 @@ class PiClassifier():
             'Flatten': 'brown!12',
         }
         
-        latex_doc = r"""\documentclass[11pt,a4paper]{article}
-        \usepackage[utf8]{inputenc}
-        \usepackage{booktabs}
-        \usepackage{graphicx}
-        \usepackage{float}
-        \usepackage{amsmath}
-        \usepackage{geometry}
-        \usepackage{xcolor}
-        \usepackage{colortbl}
-        \usepackage{multirow}
-        \geometry{margin=2.5cm}
-
-        \title{TDEM Pulse Induction Classifier\\Model Architecture Report}
-        \author{Generated by PiemsolClassifier}
-        \date{\today}
-
-        \begin{document}
-        \maketitle
-
-        \section{Model Overview}
-        This document describes the neural network architecture for Time-Domain Electromagnetic (TDEM) 
-        pulse induction signal classification. The model is designed for binary classification 
-        to detect the presence or absence of metallic targets.
-
-        \subsection{Architecture Summary}
-        \begin{table}[H]
-        \centering
-        \caption{Model Parameters Summary}
-        \label{tab:params_summary}
-        \begin{tabular}{@{}lr@{}}
-        \toprule
-        \textbf{Parameter Category} & \textbf{Count} \\
-        \midrule
-        Trainable Parameters & """ + f"{trainable_params:,}" + r""" \\
-        Non-trainable Parameters & """ + f"{non_trainable_params:,}" + r""" \\
-        \midrule
-        \textbf{Total Parameters} & \textbf{""" + f"{total_params:,}" + r"""} \\
-        \bottomrule
-        \end{tabular}
-        \end{table}
-
-        \subsection{Computational Complexity}
-        \begin{table}[H]
-        \centering
-        \caption{Computational Cost per Inference}
-        \label{tab:flops}
-        \begin{tabular}{@{}lr@{}}
-        \toprule
-        \textbf{Metric} & \textbf{Value} \\
-        \midrule
-        Total FLOPs & """ + f"{flops_info['total_flops']:,}" + r""" \\
-        MFLOPs & """ + f"{flops_info['mflops']:.3f}" + r""" \\
-        GFLOPs & """ + f"{flops_info['gflops']:.6f}" + r""" \\
-        \bottomrule
-        \end{tabular}
-        \end{table}
-
-        \section{Layer-by-Layer Architecture}
-
-        \begin{table}[H]
-        \centering
-        \caption{Layer-wise Parameter Breakdown of the TDEM Classifier}
-        \label{tab:layer_params}
-        \resizebox{\textwidth}{!}{%
-        \begin{tabular}{|l|l|r|p{2cm}|r|r|}
-        \hline
-        \rowcolor{gray!30}
-        \textbf{Block} & \textbf{Layer Name} & \textbf{Output Shape} & \textbf{Filter/Pool Size} & \textbf{Stride} & \textbf{Parameters} \\
-        \hline
-        """
+        latex_doc = r + f"{trainable_params:,}" + r + f"{non_trainable_params:,}" + r + f"{total_params:,}" + r + f"{flops_info['total_flops']:,}" + r + f"{flops_info['mflops']:.3f}" + r + f"{flops_info['gflops']:.6f}" + r
 
         block_assignments = {
             'input': ('Input', 'input'),
@@ -1428,7 +1245,6 @@ class PiClassifier():
             
             block_name, _ = block_assignments.get(layer_name, ('Unknown', layer_name))
     
-        # -- Logic for BOLD Separators between blocks --
         if block_name != current_block:
             if current_block is not None:
                 latex_doc += r"\noalign{\hrule height 2pt}" + "\n"
@@ -1440,52 +1256,21 @@ class PiClassifier():
         
         latex_doc += f"\\rowcolor{{{row_color}}}\n"
         
-        # -- FIX: USE NEGATIVE MULTIROW ON THE LAST ROW --
-        # We determine if this is the last row of the block
         is_last_row = (block_row_count[block_name] == 1)
         total_rows = block_counts[block_name]
         
         if total_rows == 1:
-            # Case: Single row block (like Input), just print the name directly
             first_col = f"\\cellcolor{{white}}{block_name}"
         elif is_last_row:
-            # Case: Last row of a multi-row block. 
-            # We use NEGATIVE multirow (e.g., -4) to project text upwards.
-            # This ensures text sits ON TOP of the white cells defined in previous loop iterations.
             first_col = f"\\cellcolor{{white}}\\multirow{{-{total_rows}}}{{*}}{{{block_name}}}"
         else:
-            # Case: Upper rows of a multi-row block.
-            # We print an empty cell with white background to mask the row color.
             first_col = f"\\cellcolor{{white}}"
 
         latex_doc += f"{first_col} & {layer_name_escaped}({layer_type}) & {shape_str} & {filter_pool_size} & {stride} & {layer_params:,} \\\\\n"
         
         block_row_count[block_name] -= 1
 
-        latex_doc += r"""\hline
-        \rowcolor{gray!30}
-        \multicolumn{5}{|l|}{\textbf{Trainable Parameters}} & \textbf{""" + f"{trainable_params:,}" + r"""} \\
-        \rowcolor{gray!30}
-        \multicolumn{5}{|l|}{\textbf{Non-trainable Parameters}} & \textbf{""" + f"{non_trainable_params:,}" + r"""} \\
-        \hline
-        \rowcolor{gray!40}
-        \multicolumn{5}{|l|}{\textbf{Total Parameters}} & \textbf{""" + f"{total_params:,}" + r"""} \\
-        \hline
-        \end{tabular}%
-        }
-        \end{table}
-
-        \section{FLOP Breakdown by Layer Type}
-
-        \begin{table}[H]
-        \centering
-        \caption{Computational Cost by Layer Type}
-        \label{tab:flops_breakdown}
-        \begin{tabular}{@{}lrr@{}}
-        \toprule
-        \textbf{Layer Type} & \textbf{FLOPs} & \textbf{Percentage} \\
-        \midrule
-        """
+        latex_doc += r + f"{trainable_params:,}" + r + f"{non_trainable_params:,}" + r + f"{total_params:,}" + r
         type_flops = {}
         for name, info in flops_info['breakdown'].items():
             ltype = info['type']
@@ -1498,14 +1283,7 @@ class PiClassifier():
                 pct = flops / flops_info['total_flops'] * 100
                 latex_doc += f"{ltype} & {flops:,} & {pct:.1f}\\% \\\\\n"
 
-        latex_doc += r"""\midrule
-        \textbf{Total} & \textbf{""" + f"{flops_info['total_flops']:,}" + r"""} & \textbf{100\%} \\
-        \bottomrule
-        \end{tabular}
-        \end{table}
-
-        \end{document}
-        """
+        latex_doc += r + f"{flops_info['total_flops']:,}" + r
         
         print(f"Trainable Parameters: {trainable_params:,}")
         print(f"Non-trainable Parameters: {non_trainable_params:,}")

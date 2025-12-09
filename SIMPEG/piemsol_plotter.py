@@ -12,7 +12,6 @@ from discretize import CylindricalMesh
 import h5py
 from sklearn.metrics import roc_curve, auc
 
-
 class LogitTransform(mtransforms.Transform):
     input_dims = output_dims = 1
 
@@ -23,7 +22,6 @@ class LogitTransform(mtransforms.Transform):
     def inverted(self):
         return InvertedLogitTransform()
 
-
 class InvertedLogitTransform(mtransforms.Transform):
     input_dims = output_dims = 1
 
@@ -32,7 +30,6 @@ class InvertedLogitTransform(mtransforms.Transform):
 
     def inverted(self):
         return LogitTransform()
-
 
 class LogitScale(mscale.ScaleBase):
     name = 'logit_custom'
@@ -51,15 +48,13 @@ class LogitScale(mscale.ScaleBase):
     def limit_range_for_scale(self, vmin, vmax, minpos):
         return max(vmin, 1e-5), min(vmax, 1-1e-5)
 
-
 mscale.register_scale(LogitScale)
 
 class BasePlotter:
     def __init__(self):
         pass
 
-
-class PiPlotter(BasePlotter):
+class PiemsolPlotter(BasePlotter):
     def __init__(self, cfg, simulator):
         self.cfg = cfg
         self.simulator = simulator
@@ -71,7 +66,7 @@ class PiPlotter(BasePlotter):
         self.mesh = None
         self.ind_active = None
         self.model_no_target = None
-        print(f"PiPlotter initialized. Use load_from_hdf5() to load data.")
+        print(f"PiemsolPlotter initialized. Use load_from_hdf5() to load data.")
     
     def load_from_hdf5(self, hdf5_file):
         self.hdf5_file = hdf5_file
@@ -131,7 +126,7 @@ class PiPlotter(BasePlotter):
                     self.simulations_metadata.append(metadata)
                 except (OSError, KeyError) as e:
                     self.skipped_indices.append(i)
-                    print(f"Warning: Skipping missing/corrupted simulation_{i}: {e}")
+                    print(f"Warning: SkipPiemsolng missing/corrupted simulation_{i}: {e}")
                     continue
             
             if self.skipped_indices:
@@ -193,7 +188,6 @@ class PiPlotter(BasePlotter):
                           linewidth=2, label=f"{label_prefix} {label}")
         
         plt.xlabel('Time [μs]', fontsize=20)
-        #plt.ylabel(r'$\\left\\frac{\\partial B_{z}}{\\partial t}\\right$ [T/s]', fontsize=20)
         plt.tick_params(labelsize=20)
         plt.legend(fontsize=20, bbox_to_anchor=(1.05, 1), loc='upper left')
         plt.grid(True, alpha=0.3, which='both')
@@ -235,7 +229,7 @@ class PiPlotter(BasePlotter):
                     if 0 <= idx < len(self.simulations_metadata):
                         selected_indices.append(idx)
                     else:
-                        print(f"Warning: Index {part} out of range, skipping.")
+                        print(f"Warning: Index {part} out of range, skipPiemsolng.")
             except ValueError:
                 print("Invalid input format.")
                 return
@@ -329,7 +323,6 @@ class PiPlotter(BasePlotter):
             target_z = metadata['target_z']
             loop_z = metadata['loop_z']
             
-            # Handle both target-present and target-absent cases
             if target_type > 0:
                 status = f"Type: {type_names[target_type]}, σ={target_conductivity:.1e} S/m, z={target_z:.3f}m"
             else:
@@ -388,14 +381,12 @@ class PiPlotter(BasePlotter):
                             clim=(np.log10(self.cfg.air_conductivity), 
                                   np.log10(self.cfg.aluminum_conductivity)))
         
-        # Add colorbar for conductivity
         cbar = plt.colorbar(im[0], ax=ax, pad=0.02)
         cbar.set_label(r'$\log_{10}(\sigma)$ [S/m]', fontsize=20)
         cbar.ax.tick_params(labelsize=18)
         
         ax.axhline(y=0, color='brown', linestyle='-', linewidth=3, alpha=0.8, label='Ground surface')
         
-        # Plot transmitter loop
         loop_radius = float(self.cfg.tx_radius)
         ax.plot([0, loop_radius], [loop_z, loop_z], 
                color='blue', linewidth=2.5, marker='o', markersize=8,
@@ -412,7 +403,6 @@ class PiPlotter(BasePlotter):
         plt.tight_layout()
         plt.show()
         plt.close(fig)
-
 
 class ClassifierPlotter(BasePlotter):
     def __init__(self):
@@ -558,10 +548,8 @@ class ClassifierPlotter(BasePlotter):
         data_to_plot = [target_absent_probs, target_present_probs]
         
         positions = [1, 2]
-        # Colors: C_A = #FF0000 (red), C_P = #007FFF (azure blue)
         colors_dist = ['blue','orange']
         
-        # First plot jittered scatter points with high transparency
         for i, (data, pos, color) in enumerate(zip(data_to_plot, positions, colors_dist)):
             if len(data) == 0:
                 continue
@@ -573,13 +561,11 @@ class ClassifierPlotter(BasePlotter):
                 alpha_val = 0.1
             ax2.scatter(x_pos, data, marker='o', color=color, alpha=alpha_val, s=20, zorder=1)
         
-        # Create box and whisker plot - unfilled boxes with black outlines
         bp = ax2.boxplot(data_to_plot, positions=positions, widths=0.3, 
                         patch_artist=True, showfliers=False, zorder=2,
                         showmeans=True, meanprops=dict(marker='D', markerfacecolor='black', 
                                                         markeredgecolor='black', markersize=10))
         
-        # Style the boxplot - transparent boxes with black edges
         for patch in bp['boxes']:
             patch.set_facecolor('none')  # Transparent fill
             patch.set_edgecolor('gray')
@@ -607,7 +593,6 @@ class ClassifierPlotter(BasePlotter):
 
         ax2.set_ylim(1e-5, 1-1e-5)
         
-        # Custom legend
         from matplotlib.lines import Line2D
         legend_elements = [
             Line2D([0], [0], marker='D', color='w', markerfacecolor='black', markersize=8, label='Mean'),
@@ -642,7 +627,6 @@ class ClassifierPlotter(BasePlotter):
         
         fig, axes = plt.subplots(1, 3, figsize=(18, 6))
         
-        # Plot 1: Standard ROC (Pd vs Pfa)
         ax1 = axes[0]
         ax1.plot(pfa, pd, color='darkorange', lw=3, 
                 label=f'ROC (AUC = {roc_auc:.4f})')
@@ -666,7 +650,6 @@ class ClassifierPlotter(BasePlotter):
         ax1.legend(loc="lower right", fontsize=20)
         ax1.grid(True, alpha=0.3)
         
-        # Plot 2: Semi-log ROC
         ax2 = axes[1]
         valid_mask = pfa > 0
         ax2.semilogx(pfa[valid_mask], pd[valid_mask], color='darkorange', lw=3,
@@ -679,7 +662,6 @@ class ClassifierPlotter(BasePlotter):
         ax2.legend(loc="lower right", fontsize=20)
         ax2.grid(True, alpha=0.3, which='both')
         
-        # Plot 3: Pd at specific Pfa values
         ax3 = axes[2]
         
         pfa_eval_points = np.logspace(-4, 0, 50)
@@ -740,7 +722,6 @@ class ClassifierPlotter(BasePlotter):
         
         time_us = time * 1e6
         
-        # Plot 1: All decay curves colored by label
         ax = axes[0, 0]
         for i, (decay, label, label_str) in enumerate(zip(decay_curves, labels, label_strings)):
             color = 'green' if label == 1 else 'blue'
@@ -759,7 +740,6 @@ class ClassifierPlotter(BasePlotter):
         ax.grid(True, alpha=0.3, which='both')
         ax.tick_params(labelsize=20)
         
-        # Plot 2: Sample target-present curves
         ax = axes[0, 1]
         target_present_indices = np.where(labels == 1)[0][:5]
         for idx in target_present_indices:
@@ -770,7 +750,6 @@ class ClassifierPlotter(BasePlotter):
         ax.grid(True, alpha=0.3, which='both')
         ax.tick_params(labelsize=20)
         
-        # Plot 3: Sample target-absent curves
         ax = axes[1, 0]
         target_absent_indices = np.where(labels == 0)[0][:5]
         for idx in target_absent_indices:
@@ -781,7 +760,6 @@ class ClassifierPlotter(BasePlotter):
         ax.grid(True, alpha=0.3, which='both')
         ax.tick_params(labelsize=20)
         
-        # Plot 4: Simple stats
         ax = axes[1, 1]
         ax.text(0.5, 0.7, f'Total Samples: {len(decay_curves)}', 
                 ha='center', va='center', fontsize=20)
@@ -870,7 +848,6 @@ class ClassifierPlotter(BasePlotter):
         block_spacing = 0.6
         x_center = 6
         
-        # For equal spacing between all layers, total height is just layers * spacing
         total_height = n_layers * y_spacing
         
         fig_height = max(10, total_height * 0.6 + 1)
@@ -889,7 +866,6 @@ class ClassifierPlotter(BasePlotter):
                     new_block = block_num
                     break
             
-            # For equal spacing, remove block spacing logic from positioning
             if new_block and new_block != current_block:
                 current_block = new_block
                 block_y_ranges[current_block] = {'start': y_pos, 'end': None}
@@ -906,11 +882,8 @@ class ClassifierPlotter(BasePlotter):
         
         for block_num, y_range in block_y_ranges.items():
             if y_range['start'] is not None and y_range['end'] is not None:
-                # Use static block height same as Block 3 (4 layers)
-                # Block 3 spans: 3 * y_spacing + box_height + padding
                 static_block_height = 3 * y_spacing + box_height + 0.5
                 
-                # Anchor at bottom of last layer in block
                 block_bottom = y_range['end'] - box_height/2
                 block_top = block_bottom + static_block_height
                 
@@ -1085,24 +1058,20 @@ class ClassifierPlotter(BasePlotter):
         else:
             decay_curves_orig = X_test
         
-        # First, process the original (no noise) case
         print(f"\nProcessing Original (no noise)...")
         
         X_noisy = decay_curves_orig.reshape(len(decay_curves_orig), -1, 1)
         
-        # Get predictions
         if use_quantized:
             y_pred_proba = tflite_predict_fn(X_noisy)
         else:
             y_pred_proba = model.predict(X_noisy, verbose=0)
         
-        # Get probability of target being present (class 1)
         if y_pred_proba.ndim > 1 and y_pred_proba.shape[1] > 1:
             y_pred_proba_target = y_pred_proba[:, 1]
         else:
             y_pred_proba_target = y_pred_proba.flatten()
         
-        # Calculate ROC curve
         pfa, pd, thresholds = roc_curve(y_test, y_pred_proba_target)
         roc_auc = auc(pfa, pd)
         
@@ -1115,7 +1084,6 @@ class ClassifierPlotter(BasePlotter):
         
         print(f"  AUC = {roc_auc:.4f}")
         
-        # Plot the original
         ax.plot(pfa, pd, color='black', lw=3, 
                 label=f'No noise (AUC = {roc_auc:.3f})')
         
@@ -1124,22 +1092,18 @@ class ClassifierPlotter(BasePlotter):
             
             decay_curves_noisy = conditioner.add_noise(time, decay_curves_orig, late_time, snr)
         
-            # Reshape for model input (add channel dimension)
             X_noisy = decay_curves_noisy.reshape(len(decay_curves_noisy), -1, 1)
             
-            # Get predictions
             if use_quantized:
                 y_pred_proba = tflite_predict_fn(X_noisy)
             else:
                 y_pred_proba = model.predict(X_noisy, verbose=0)
             
-            # Get probability of target being present (class 1)
             if y_pred_proba.ndim > 1 and y_pred_proba.shape[1] > 1:
                 y_pred_proba_target = y_pred_proba[:, 1]
             else:
                 y_pred_proba_target = y_pred_proba.flatten()
             
-            # Calculate ROC curve
             pfa, pd, thresholds = roc_curve(y_test, y_pred_proba_target)
             roc_auc = auc(pfa, pd)
             
@@ -1152,11 +1116,9 @@ class ClassifierPlotter(BasePlotter):
             
             print(f"  AUC = {roc_auc:.4f}")
             
-            # Plot on linear scale
             ax.plot(pfa, pd, color=color, lw=2, 
                         label=f'SNR = {snr} dB (AUC = {roc_auc:.3f})')
         
-        # Configure linear scale plot
         ax.plot([0, 1], [0, 1], 'k--', lw=1, label='Random')
         ax.set_xlabel('Probability of false alarm ($P_{FA}$)', fontsize=20)
         ax.set_ylabel('Probability of detection ($P_{D}$)', fontsize=20)
@@ -1169,7 +1131,6 @@ class ClassifierPlotter(BasePlotter):
         plt.tight_layout()
         plt.show()
         
-        # Print summary table
         print("\n" + "="*70)
         print("Summary")
         print("="*70)
@@ -1184,9 +1145,7 @@ class ClassifierPlotter(BasePlotter):
 
     def plot_multi_snr_confusion_and_distribution(self, model, time, X_test, y_test, snr_values, late_time,
                                                    conditioner=None, use_quantized=False, tflite_predict_fn=None):
-        """
-        Plot confusion matrices and prediction distributions for multiple SNR values.
-        """
+        
         from sklearn.metrics import confusion_matrix
         import seaborn as sns
         
@@ -1210,11 +1169,9 @@ class ClassifierPlotter(BasePlotter):
         else:
             decay_curves_orig = X_test
         
-        # Include 'Original' (no noise) plus all SNR values
         all_snr_labels = ['Original'] + [f'{snr} dB' for snr in snr_values]
         n_plots = len(all_snr_labels)
         
-        # Create figure for confusion matrices
         n_cols = min(4, n_plots)
         n_rows = (n_plots + n_cols - 1) // n_cols
         fig_cm, axes_cm = plt.subplots(n_rows, n_cols, figsize=(4*n_cols, 4*n_rows))
@@ -1225,7 +1182,6 @@ class ClassifierPlotter(BasePlotter):
         elif n_cols == 1:
             axes_cm = axes_cm.reshape(-1, 1)
         
-        # Create figure for prediction distributions
         fig_dist, axes_dist = plt.subplots(n_rows, n_cols, figsize=(4*n_cols, 4*n_rows))
         if n_plots == 1:
             axes_dist = np.array([[axes_dist]])
@@ -1236,7 +1192,6 @@ class ClassifierPlotter(BasePlotter):
         
         results = {}
         
-        # Process Original (no noise) first
         print(f"\nProcessing Original (no noise)...")
         X_input = decay_curves_orig.reshape(len(decay_curves_orig), -1, 1)
         
@@ -1255,7 +1210,6 @@ class ClassifierPlotter(BasePlotter):
         results['original'] = {'accuracy': accuracy, 'y_pred_proba': y_pred_proba_target}
         print(f"  Accuracy = {accuracy:.4f}")
         
-        # Plot confusion matrix for Original
         row, col = 0, 0
         cm = confusion_matrix(y_test, y_pred)
         cm = cm.T  # Transpose so rows=predicted, cols=true
@@ -1266,7 +1220,6 @@ class ClassifierPlotter(BasePlotter):
         axes_cm[row, col].set_xlabel('True', fontsize=10)
         axes_cm[row, col].set_ylabel('Predicted', fontsize=10)
         
-        # Plot prediction distribution for Original
         target_present_probs = y_pred_proba_target[y_test == 1]
         target_absent_probs = y_pred_proba_target[y_test == 0]
         axes_dist[row, col].hist(target_present_probs, bins=20, alpha=0.6, color='green', label='$C_P$', edgecolor='black')
@@ -1277,7 +1230,6 @@ class ClassifierPlotter(BasePlotter):
         axes_dist[row, col].set_ylabel('Frequency', fontsize=10)
         axes_dist[row, col].legend(fontsize=8)
         
-        # Process each SNR value
         for i, snr in enumerate(snr_values):
             print(f"\nProcessing SNR = {snr} dB...")
             
@@ -1299,7 +1251,6 @@ class ClassifierPlotter(BasePlotter):
             results[snr] = {'accuracy': accuracy, 'y_pred_proba': y_pred_proba_target}
             print(f"  Accuracy = {accuracy:.4f}")
             
-            # Plot confusion matrix
             plot_idx = i + 1
             row = plot_idx // n_cols
             col = plot_idx % n_cols
@@ -1312,7 +1263,6 @@ class ClassifierPlotter(BasePlotter):
             axes_cm[row, col].set_xlabel('True', fontsize=10)
             axes_cm[row, col].set_ylabel('Predicted', fontsize=10)
             
-            # Plot prediction distribution
             target_present_probs = y_pred_proba_target[y_test == 1]
             target_absent_probs = y_pred_proba_target[y_test == 0]
             axes_dist[row, col].hist(target_present_probs, bins=20, alpha=0.6, color='green', label='$C_P$', edgecolor='black')
@@ -1323,7 +1273,6 @@ class ClassifierPlotter(BasePlotter):
             axes_dist[row, col].set_ylabel('Frequency', fontsize=10)
             axes_dist[row, col].legend(fontsize=8)
         
-        # Hide unused subplots
         for idx in range(n_plots, n_rows * n_cols):
             row = idx // n_cols
             col = idx % n_cols
@@ -1338,7 +1287,6 @@ class ClassifierPlotter(BasePlotter):
         fig_dist.tight_layout()
         fig_dist.show()
         
-        # Print summary
         print("\n" + "="*70)
         print("Summary")
         print("="*70)
@@ -1351,36 +1299,20 @@ class ClassifierPlotter(BasePlotter):
         return results
 
     def multi_snr_plot(self, snr_values, data_series, ylabel, ylim, original_values=None):
-        """
-        Generic plot for multi-SNR data.
         
-        Parameters:
-        -----------
-        snr_values : list
-            List of SNR values
-        data_series : list of tuples
-            Each tuple: (values_list, label, color)
-        ylabel : str
-            Y-axis label
-        ylim : list
-            Y-axis limits [ymin, ymax]
-        original_values : dict, optional
-            Keys: 'keras', 'quantized', 'original' with corresponding values
-        """
         fig, ax = plt.subplots(figsize=(10, 6))
         
         for values, label, color in data_series:
             ax.plot(snr_values, values, 'o:', color=color, lw=2.5, markersize=10, label=label)
         
-        # Original lines
         if original_values:
             for key, val in original_values.items():
                 if key == 'keras' or key == 'original':
                     ax.axhline(val, color='tab:orange', linestyle='-', lw=2,
-                              label=f'Proposed classifier (FP32/no noise): {val:.3f}')
+                              label=f'Proposed classifier (Keras/no noise): {val:.3f}')
                 elif key == 'quantized':
                     ax.axhline(val, color='tab:blue', linestyle='-', lw=2,
-                              label=f'Proposed classifier (INT8/no noise): {val:.3f}')
+                              label=f'Proposed classifier (LiteRT/no noise): {val:.3f}')
         
         ax.axhline(0.5, color='grey', linestyle='--', lw=2, label='Random classifier')
         
@@ -1391,7 +1323,6 @@ class ClassifierPlotter(BasePlotter):
         ax.set_ylim(ylim)
         ax.tick_params(labelsize=20)
         
-        # Annotations
         for i, snr in enumerate(snr_values):
             for j, (values, _, color) in enumerate(data_series):
                 val = values[i]
@@ -1409,9 +1340,7 @@ class ClassifierPlotter(BasePlotter):
 
     def plot_multi_snr_accuracy(self, model, time, X_test, y_test, snr_values, late_time,
                                  conditioner=None, use_quantized=False, tflite_predict_fn=None):
-        """
-        Plot accuracy as a function of SNR.
-        """
+        
         if model is None and not use_quantized:
             print("Error: No model provided!")
             return None
@@ -1436,7 +1365,6 @@ class ClassifierPlotter(BasePlotter):
         accuracies = []
         snr_plot_values = []
         
-        # Process Original (no noise) - use high SNR placeholder for plotting
         print(f"\nProcessing Original (no noise)...")
         X_input = decay_curves_orig.reshape(len(decay_curves_orig), -1, 1)
         
@@ -1455,7 +1383,6 @@ class ClassifierPlotter(BasePlotter):
         results['original'] = accuracy_original
         print(f"  Accuracy = {accuracy_original:.4f}")
         
-        # Process each SNR value
         for snr in snr_values:
             print(f"\nProcessing SNR = {snr} dB...")
             
@@ -1479,12 +1406,10 @@ class ClassifierPlotter(BasePlotter):
             snr_plot_values.append(snr)
             print(f"  Accuracy = {accuracy:.4f}")
         
-        # Create plot
-        data_series = [(accuracies, 'Proposed classifier (FP32)', 'tab:orange')]
+        data_series = [(accuracies, 'Proposed classifier (Keras)', 'tab:orange')]
         original_values = {'original': accuracy_original}
         fig = self.multi_snr_plot(snr_plot_values, data_series, 'Accuracy', [0.45, 1.05], original_values)
         
-        # Print summary
         print("\n" + "="*70)
         print("Summary")
         print("="*70)
@@ -1498,9 +1423,7 @@ class ClassifierPlotter(BasePlotter):
 
     def plot_multi_snr_auc(self, model, time, X_test, y_test, snr_values, late_time,
                            conditioner=None, use_quantized=False, tflite_predict_fn=None):
-        """
-        Plot AUC as a function of SNR.
-        """
+        
         if model is None and not use_quantized:
             print("Error: No model provided!")
             return None
@@ -1525,7 +1448,6 @@ class ClassifierPlotter(BasePlotter):
         auc_values = []
         snr_plot_values = []
         
-        # Process Original (no noise)
         print(f"\nProcessing Original (no noise)...")
         X_input = decay_curves_orig.reshape(len(decay_curves_orig), -1, 1)
         
@@ -1544,7 +1466,6 @@ class ClassifierPlotter(BasePlotter):
         results['original'] = auc_original
         print(f"  AUC = {auc_original:.4f}")
         
-        # Process each SNR value
         for snr in snr_values:
             print(f"\nProcessing SNR = {snr} dB...")
             
@@ -1568,12 +1489,10 @@ class ClassifierPlotter(BasePlotter):
             snr_plot_values.append(snr)
             print(f"  AUC = {auc_val:.4f}")
         
-        # Create plot
         data_series = [(auc_values, 'AUC', 'tab:orange')]
         original_values = {'original': auc_original}
         fig = self.multi_snr_plot(snr_plot_values, data_series, 'AUC', [0.45, 1.05], original_values)
         
-        # Print summary
         print("\n" + "="*70)
         print("Summary")
         print("="*70)
@@ -1586,14 +1505,7 @@ class ClassifierPlotter(BasePlotter):
         return results
 
     def plot_model_size_comparison(self, size_results):
-        """
-        Plot bar chart comparing FP32 vs INT8 model sizes.
         
-        Parameters:
-        -----------
-        size_results : dict
-            Results from classifier.get_model_size()
-        """
         if size_results is None:
             print("Error: No size results provided!")
             return
@@ -1604,13 +1516,12 @@ class ClassifierPlotter(BasePlotter):
         
         fig, ax = plt.subplots(figsize=(8, 6))
         
-        models = ['Proposed classifier (FP32)', 'Proposed classifier (INT8)']
+        models = ['Proposed classifier (Keras)', 'Proposed classifier (LiteRT)']
         sizes_kb = [size_results['keras']['disk_kb'], size_results['quantized']['disk_kb']]
         colors = ['tab:orange', 'tab:blue']
         
         bars = ax.bar(models, sizes_kb, color=colors, width=0.6, edgecolor='black', linewidth=1.5)
         
-        # Add value labels on bars
         for bar, size in zip(bars, sizes_kb):
             height = bar.get_height()
             ax.annotate(f'{size:.2f} KB',
@@ -1619,7 +1530,6 @@ class ClassifierPlotter(BasePlotter):
                        textcoords="offset points",
                        ha='center', va='bottom', fontsize=20, fontweight='bold')
         
-        # Add compression ratio annotation
         if 'comparison' in size_results:
             ratio = size_results['comparison']['compression_ratio']
             reduction = size_results['comparison']['size_reduction_percent']
@@ -1639,14 +1549,7 @@ class ClassifierPlotter(BasePlotter):
         return fig
 
     def plot_inference_time_comparison(self, inference_results):
-        """
-        Plot inference time evolution over runs (log y-axis) comparing FP32 vs INT8 models.
         
-        Parameters:
-        -----------
-        inference_results : dict
-            Results from classifier.profile_inference()
-        """
         if inference_results is None:
             print("Error: No inference results provided!")
             return
@@ -1658,50 +1561,39 @@ class ClassifierPlotter(BasePlotter):
             print("Error: No model timing data available!")
             return
         
-        # Plot: Inference time evolution over runs (log y-axis)
         fig, ax = plt.subplots(figsize=(10, 6))
         
         if has_keras:
             keras_times = inference_results['keras']['all_times_ms']
             runs_keras = np.arange(1, len(keras_times) + 1)
             ax.plot(runs_keras, keras_times, color='tab:orange', alpha=0.7, 
-                    linewidth=1.5, label='Proposed classifier (FP32)')
-            # Dotted average line
+                    linewidth=1.5, label='Proposed classifier (Keras)')
             keras_mean = inference_results['keras']['mean_ms']
             ax.axhline(y=keras_mean, color='tab:orange', linestyle='--', 
-                       linewidth=2.5, label=f'FP32 average: {keras_mean:.3f} ms')
+                       linewidth=2.5, label=f'Keras average: {keras_mean:.2f} ms')
         
         if has_quantized:
             quant_times = inference_results['quantized']['all_times_ms']
             runs_quant = np.arange(1, len(quant_times) + 1)
             ax.plot(runs_quant, quant_times, color='tab:blue', alpha=0.7, 
-                    linewidth=1.5, label='Proposed classifier (INT8)')
-            # Dotted average line
+                    linewidth=1.5, label='Proposed classifier (LiteRT)')
             quant_mean = inference_results['quantized']['mean_ms']
             ax.axhline(y=quant_mean, color='tab:blue', linestyle='--', 
-                       linewidth=2.5, label=f'INT8 average: {quant_mean:.3f} ms')
+                       linewidth=2.5, label=f'LiteRT average: {quant_mean:.2f} ms')
         
-        ax.set_yscale('log')
         ax.set_xlabel('Inference run number', fontsize=20)
         ax.set_ylabel('Inference time [ms]', fontsize=20)
         ax.tick_params(labelsize=20)
         ax.grid(True, alpha=0.3, which='both')
-        ax.legend(fontsize=14)
-        
+        ax.legend(fontsize=20)
+
         plt.tight_layout()
         plt.show()
         
         return fig
 
     def plot_accuracy_comparison(self, accuracy_results):
-        """
-        Plot bar chart comparing Keras vs Quantized model accuracy.
         
-        Parameters:
-        -----------
-        accuracy_results : dict
-            Results from classifier.compare_model_accuracy()
-        """
         if accuracy_results is None:
             print("Error: No accuracy results provided!")
             return
@@ -1720,30 +1612,27 @@ class ClassifierPlotter(BasePlotter):
         colors = []
         
         if has_keras:
-            models.append('Proposed classifier (FP32)')
+            models.append('Proposed classifier (Keras)')
             accuracies.append(accuracy_results['keras']['accuracy'] * 100)
             colors.append('tab:orange')
         
         if has_quantized:
-            models.append('Proposed classifier (INT8)')
+            models.append('Proposed classifier (LiteRT)')
             accuracies.append(accuracy_results['quantized']['accuracy'] * 100)
             colors.append('tab:blue')
         
         bars = ax.bar(models, accuracies, color=colors, width=0.6, 
                      edgecolor='black', linewidth=1.5)
         
-        # Add horizontal line for proposed classifier accuracy
         if has_keras:
             ax.axhline(accuracies[0], color='black', linestyle='--', lw=2, 
-                      label=f'Proposed classifier (FP32)')
+                      label=f'Proposed classifier (Keras)')
             ax.text(0, accuracies[0] - 2, f'{accuracies[0]:.2f}', 
                    fontsize=20, verticalalignment='center', horizontalalignment='left')
         
-        # Add horizontal line for random classifier
         ax.axhline(50, color='grey', linestyle='--', lw=2, 
                   label=f'Random classifier')
         
-        # Add value labels on bars
         for i, (bar, acc) in enumerate(zip(bars, accuracies)):
             height = bar.get_height()
             if i == len(bars) - 1:  # Last bar (quantized)
@@ -1756,13 +1645,12 @@ class ClassifierPlotter(BasePlotter):
                        textcoords="offset points",
                        ha='center', va='bottom', fontsize=20, fontweight='bold')
         
-        # Add accuracy difference annotation
         if 'comparison' in accuracy_results:
             diff = accuracy_results['comparison']['accuracy_difference'] * 100
             if abs(diff) < 0.01:
                 diff_text = 'Same accuracy'
             else:
-                better = 'Proposed classifier (FP32)' if diff > 0 else 'Proposed classifier (INT8)'
+                better = 'Proposed classifier (Keras)' if diff > 0 else 'Proposed classifier (LiteRT)'
                 diff_text = f'{better} is {abs(diff):.2f}% more accurate'
             ax.text(0.5, 0.95, diff_text,
                    transform=ax.transAxes, ha='center', va='top', fontsize=18,
@@ -1781,24 +1669,13 @@ class ClassifierPlotter(BasePlotter):
         return fig
 
     def plot_multi_snr_accuracy_comparison(self, keras_results, quantized_results, snr_values):
-        """
-        Plot accuracy vs SNR comparing Keras and Quantized models.
         
-        Parameters:
-        -----------
-        keras_results : dict
-            Accuracy results for Keras model at different SNR levels
-        quantized_results : dict
-            Accuracy results for Quantized model at different SNR levels
-        snr_values : list
-            List of SNR values tested
-        """
         keras_accs = [keras_results.get(snr, 0) for snr in snr_values]
         quant_accs = [quantized_results.get(snr, 0) for snr in snr_values]
         
         data_series = [
-            (keras_accs, 'Proposed classifier (FP32)', 'tab:orange'),
-            (quant_accs, 'Proposed classifier (INT8)', 'tab:blue')
+            (keras_accs, 'Proposed classifier (Keras)', 'tab:orange'),
+            (quant_accs, 'Proposed classifier (LiteRT)', 'tab:blue')
         ]
         
         original_values = {}
@@ -1812,24 +1689,13 @@ class ClassifierPlotter(BasePlotter):
         return fig
 
     def plot_multi_snr_auc_comparison(self, keras_results, quantized_results, snr_values):
-        """
-        Plot AUC vs SNR comparing Keras and Quantized models.
         
-        Parameters:
-        -----------
-        keras_results : dict
-            AUC results for Keras model at different SNR levels
-        quantized_results : dict
-            AUC results for Quantized model at different SNR levels
-        snr_values : list
-            List of SNR values tested
-        """
         keras_aucs = [keras_results.get(snr, 0) for snr in snr_values]
         quant_aucs = [quantized_results.get(snr, 0) for snr in snr_values]
         
         data_series = [
-            (keras_aucs, 'Proposed classifier (FP32)', 'tab:orange'),
-            (quant_aucs, 'Proposed classifier (INT8)', 'tab:blue')
+            (keras_aucs, 'Proposed classifier (Keras)', 'tab:orange'),
+            (quant_aucs, 'Proposed classifier (LiteRT)', 'tab:blue')
         ]
         
         original_values = {}
@@ -1843,26 +1709,14 @@ class ClassifierPlotter(BasePlotter):
         return fig
 
     def plot_comprehensive_model_comparison(self, size_results, inference_results, accuracy_results):
-        """
-        Create a comprehensive 2x2 subplot comparing all aspects of FP32 vs INT8 models.
         
-        Parameters:
-        -----------
-        size_results : dict
-            Results from classifier.get_model_size()
-        inference_results : dict
-            Results from classifier.profile_inference()
-        accuracy_results : dict
-            Results from classifier.compare_model_accuracy()
-        """
         fig, axes = plt.subplots(2, 2, figsize=(14, 12))
         
         colors = {'keras': 'tab:orange', 'quantized': 'tab:blue'}
         
-        # Top-left: Model Size
         ax1 = axes[0, 0]
         if size_results and 'quantized' in size_results:
-            models = ['Proposed classifier (FP32)', 'Proposed classifier (INT8)']
+            models = ['Proposed classifier (Keras)', 'Proposed classifier (LiteRT)']
             sizes = [size_results['keras']['disk_kb'], size_results['quantized']['disk_kb']]
             bars = ax1.bar(models, sizes, color=[colors['keras'], colors['quantized']], 
                           width=0.6, edgecolor='black', linewidth=1.5)
@@ -1880,7 +1734,6 @@ class ClassifierPlotter(BasePlotter):
         ax1.tick_params(labelsize=18)
         ax1.grid(True, alpha=0.3, axis='y')
         
-        # Top-right: Inference Time
         ax2 = axes[0, 1]
         if inference_results:
             models = []
@@ -1888,12 +1741,12 @@ class ClassifierPlotter(BasePlotter):
             stds = []
             bar_colors = []
             if 'keras' in inference_results:
-                models.append('Proposed classifier (FP32)')
+                models.append('Proposed classifier (Keras)')
                 times.append(inference_results['keras']['mean_ms'])
                 stds.append(inference_results['keras']['std_ms'])
                 bar_colors.append(colors['keras'])
             if 'quantized' in inference_results:
-                models.append('Proposed classifier (INT8)')
+                models.append('Proposed classifier (LiteRT)')
                 times.append(inference_results['quantized']['mean_ms'])
                 stds.append(inference_results['quantized']['std_ms'])
                 bar_colors.append(colors['quantized'])
@@ -1914,18 +1767,17 @@ class ClassifierPlotter(BasePlotter):
         ax2.tick_params(labelsize=18)
         ax2.grid(True, alpha=0.3, axis='y')
         
-        # Bottom-left: Accuracy
         ax3 = axes[1, 0]
         if accuracy_results:
             models = []
             accs = []
             bar_colors = []
             if 'keras' in accuracy_results:
-                models.append('Proposed classifier (FP32)')
+                models.append('Proposed classifier (Keras)')
                 accs.append(accuracy_results['keras']['accuracy'] * 100)
                 bar_colors.append(colors['keras'])
             if 'quantized' in accuracy_results:
-                models.append('Proposed classifier (INT8)')
+                models.append('Proposed classifier (LiteRT)')
                 accs.append(accuracy_results['quantized']['accuracy'] * 100)
                 bar_colors.append(colors['quantized'])
             
@@ -1943,7 +1795,6 @@ class ClassifierPlotter(BasePlotter):
         ax3.tick_params(labelsize=18)
         ax3.grid(True, alpha=0.3, axis='y')
         
-        # Bottom-right: Parameters (FP32 only since quantized doesn't have same metric)
         ax4 = axes[1, 1]
         if size_results and 'keras' in size_results:
             params_data = {

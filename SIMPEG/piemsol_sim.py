@@ -12,12 +12,11 @@ import h5py
 from datetime import datetime
 import os
 
-from pi_config import PiConfig
-from pi_plotter import PiPlotter, ClassifierPlotter
-from pi_logger import PiLogger
-from pi_classifier import PiClassifier
-from pi_conditioner import PiConditioner
-
+from piemsol_config import PiemsolConfig
+from piemsol_plotter import PiemsolPlotter, ClassifierPlotter
+from piemsol_logger import PiemsolLogger
+from piemsol_classifier import PiemsolClassifier
+from piemsol_conditioner import PiemsolConditioner
 
 class SystemStatus:
     def __init__(self):
@@ -82,8 +81,7 @@ class SystemStatus:
         
         print("└" + "─"*68 + "┘")
 
-
-class PiSimulator:
+class PiemsolSimulator:
     def __init__(self, config): 
         self.cfg = config
 
@@ -131,7 +129,6 @@ class PiSimulator:
             top_z = target_z_val + self.cfg.target_height/2
             bottom_z = target_z_val - self.cfg.target_height/2
             
-            #Target type 1: Hollow cylinder
             if target_type == 1:
                 unique_r = np.unique(r)
                 min_cell_width = np.min(np.diff(unique_r[unique_r > 0])) if len(unique_r) > 1 else 0.01
@@ -150,7 +147,6 @@ class PiSimulator:
                 
                 ind_target = ind_walls | ind_top | ind_bottom
 
-            # Target type 2: Shredded fragments - hardcoded pattern
             elif target_type == 2:
                 r_max = 0.2
                 z_range = 0.1
@@ -194,7 +190,6 @@ class PiSimulator:
                             if len(cell_idx) > 0:
                                 ind_target[cell_idx[0]] = True
                 
-            # Target type 3: Solid box
             elif target_type == 3:
                 box_half_width = 2*self.cfg.target_radius
                 box_height = self.cfg.target_height
@@ -293,7 +288,6 @@ class PiSimulator:
             }
         return time_channels, emf, label, simulation_metadata, plotting_metadata, model_params
 
-
 def run_unique_distance_to_target_simulations(simulator, logger, loop_z_range, target_z_range, 
                     num_target_present, num_target_absent, num_different_targets, probability_of_target_in_soil, output_file=None):    
     mesh = None
@@ -361,24 +355,9 @@ def run_unique_distance_to_target_simulations(simulator, logger, loop_z_range, t
     print(f"\n Complete: {total_sims} simulations written to {output_file}")
     return output_file
 
-
 def run_equal_distance_to_target_simulations(simulator, logger, loop_z_range, equal_target_distance, 
                                               num_simulations, num_different_targets=1, output_file=None):
-    """Run simulations where the target is always placed at a fixed distance below the loop.
     
-    Args:
-        simulator: PiSimulator instance
-        logger: PiLogger instance
-        loop_z_range: Tuple (min, max) for random loop z position
-        equal_target_distance: Distance in meters to place target below loop (positive value)
-        num_simulations: Total number of simulations to run
-        num_different_targets: Number of different target types to randomly select from
-        output_file: Optional output file path
-    
-    The target is placed at (loop_z - equal_target_distance). If the target center is:
-        - Above z=0: marked as target_present=True
-        - Below z=0: marked as target_present=False (target absent / in soil)
-    """
     mesh = None
     sim_index = 0
     
@@ -389,12 +368,9 @@ def run_equal_distance_to_target_simulations(simulator, logger, loop_z_range, eq
         os.makedirs(output_dir, exist_ok=True)
         output_file = os.path.join(output_dir, f"{timestamp}_N{num_simulations}_D{equal_target_distance:.2f}m.h5")
     
-    # We'll count target present/absent after running simulations
-    # Initialize with placeholder values, will update in finalize
     num_target_present = 0
     num_target_absent = 0
     
-    # Initialize HDF5 file with placeholder counts (will be updated at the end)
     logger.initialize_hdf5(output_file, num_simulations, 0)
     
     print(f"\n=== Running Equal Distance Simulations (Writing to {output_file}) ===")
@@ -405,24 +381,18 @@ def run_equal_distance_to_target_simulations(simulator, logger, loop_z_range, eq
     target_absent_count = 0
     
     for i in range(num_simulations):
-        # Random loop z position within range
         loop_z_val = np.random.uniform(loop_z_range[0], loop_z_range[1])
         while loop_z_val < simulator.cfg.separation_z:
             loop_z_val = np.random.uniform(loop_z_range[0], loop_z_range[1])
         
-        # Target is placed at fixed distance below loop
         target_z_val = loop_z_val - equal_target_distance
         
-        # Determine if target is present (center above ground) or absent (center below ground)
         target_present = target_z_val >= 0
         
-        # Random target type
         target_type = np.random.randint(1, num_different_targets + 1)
         
-        # Create target z range as single point (will be used by simulator)
         target_z_range_single = [target_z_val, target_z_val]
         
-        # Run simulation with specific target position
         time, decay, label, metadata, plot_meta, model_params = simulator.run(
             [loop_z_val, loop_z_val],  # Fixed loop position for this simulation
             target_type, 
@@ -436,7 +406,6 @@ def run_equal_distance_to_target_simulations(simulator, logger, loop_z_range, eq
             error_count += 1
             continue
         
-        # Override metadata with correct target_present status
         metadata['target_present'] = target_present
         if target_present:
             metadata['label'] = f"Coil at {loop_z_val:.2f}, object at {target_z_val:.2f} (ABOVE ground)"
@@ -457,10 +426,8 @@ def run_equal_distance_to_target_simulations(simulator, logger, loop_z_range, eq
     print(f"  - Target Absent (below ground): {target_absent_count}")
     print(f"  - Errors: {error_count}")
     
-    # Update the HDF5 metadata with correct counts
     logger.finalize_hdf5(output_file, len(time))
     
-    # Update metadata with actual counts
     with h5py.File(output_file, 'a') as f:
         f['metadata'].attrs['num_target_present'] = target_present_count
         f['metadata'].attrs['num_target_absent'] = target_absent_count
@@ -470,22 +437,8 @@ def run_equal_distance_to_target_simulations(simulator, logger, loop_z_range, eq
     print(f"\n Complete: {sim_index} simulations written to {output_file}")
     return output_file
 
-
 def run_specific_placement_simulations(simulator, logger, placements, num_different_targets=1, output_file=None):
-    """Run simulations with specific (coil_z, target_z) placement combinations.
     
-    Args:
-        simulator: PiSimulator instance
-        logger: PiLogger instance
-        placements: List of tuples [(coil_z, target_z), ...] where target_z can be None for no target
-        num_different_targets: Number of different target types to randomly select from
-        output_file: Optional output file path
-    
-    Example placements: [(0.6, 0.1), (0.4, -0.1), (0.6, None)]
-        - (0.6, 0.1): coil at z=0.6m, target at z=0.1m (above ground, target present)
-        - (0.4, -0.1): coil at z=0.4m, target at z=-0.1m (below ground, target absent)
-        - (0.6, None): coil at z=0.6m, no target
-    """
     mesh = None
     sim_index = 0
     num_simulations = len(placements)
@@ -497,7 +450,6 @@ def run_specific_placement_simulations(simulator, logger, placements, num_differ
         os.makedirs(output_dir, exist_ok=True)
         output_file = os.path.join(output_dir, f"{timestamp}_N{num_simulations}_specific.h5")
     
-    # Initialize HDF5 file with placeholder counts (will be updated at the end)
     logger.initialize_hdf5(output_file, num_simulations, 0)
     
     print(f"\n=== Running Specific Placement Simulations (Writing to {output_file}) ===")
@@ -508,15 +460,12 @@ def run_specific_placement_simulations(simulator, logger, placements, num_differ
     target_absent_count = 0
     
     for i, (loop_z_val, target_z_val) in enumerate(placements):
-        # Determine target type and presence
         if target_z_val is None:
-            # No target
             target_type = 0
             target_z_range = None
             target_present = False
             label = f"Coil at {loop_z_val:.3f}m, no target"
         else:
-            # Target present - check if above or below ground
             target_type = np.random.randint(1, num_different_targets + 1)
             target_z_range = [target_z_val, target_z_val]
             target_present = target_z_val >= 0
@@ -526,7 +475,6 @@ def run_specific_placement_simulations(simulator, logger, placements, num_differ
             else:
                 label = f"Coil at {loop_z_val:.3f}m, target at {target_z_val:.3f}m (BELOW ground)"
         
-        # Run simulation with specific positions
         time, decay, _, metadata, plot_meta, model_params = simulator.run(
             [loop_z_val, loop_z_val],  # Fixed loop position
             target_type, 
@@ -541,7 +489,6 @@ def run_specific_placement_simulations(simulator, logger, placements, num_differ
             print(f"\rSimulation {i+1}/{num_simulations} - ERROR", end='', flush=True)
             continue
         
-        # Override metadata with correct values
         metadata['target_present'] = target_present
         metadata['label'] = label
         
@@ -563,10 +510,8 @@ def run_specific_placement_simulations(simulator, logger, placements, num_differ
     print(f"  - Target Absent (below ground or none): {target_absent_count}")
     print(f"  - Errors: {error_count}")
     
-    # Update the HDF5 metadata with correct counts
     logger.finalize_hdf5(output_file, len(time))
     
-    # Update metadata with actual counts
     with h5py.File(output_file, 'a') as f:
         f['metadata'].attrs['num_target_present'] = target_present_count
         f['metadata'].attrs['num_target_absent'] = target_absent_count
@@ -575,7 +520,6 @@ def run_specific_placement_simulations(simulator, logger, placements, num_differ
     
     print(f"\n Complete: {sim_index} simulations written to {output_file}")
     return output_file
-
 
 def parse_placements(input_string):
     """Parse placement string into list of (coil_z, target_z) tuples.
@@ -586,10 +530,8 @@ def parse_placements(input_string):
     """
     placements = []
     
-    # Remove spaces and split by ),(
     input_string = input_string.replace(' ', '')
     
-    # Find all (x,y) patterns
     import re
     pattern = r'\(([^,]+),([^)]+)\)'
     matches = re.findall(pattern, input_string)
@@ -610,7 +552,6 @@ def parse_placements(input_string):
     
     return placements
 
-
 def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifier, conditioner, status):
     try:
         with h5py.File(hdf5_file, 'r') as f:
@@ -621,7 +562,6 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
     except:
         status.set_dataset(hdf5_file)
     
-    # Check for existing splits
     train_path = logger.get_split_path(hdf5_file, 'train')
     val_path = logger.get_split_path(hdf5_file, 'val')
     test_path = logger.get_split_path(hdf5_file, 'test')
@@ -638,7 +578,6 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
         except:
             pass
     
-    # Update model status if classifier has a model
     if classifier.model is not None:
         status.set_model(None, classifier.model.count_params(), trained=True)
     
@@ -665,7 +604,6 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
         choice = input("\nSelect option: ").strip().lower()
         
         if choice == '1':
-            # Visualize dataset
             try:
                 plotter.load_from_hdf5(hdf5_file)
                 plotter.run()
@@ -675,14 +613,12 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                 traceback.print_exc()
         
         elif choice == '2':
-            # Print statistics
             try:
                 logger.print_hdf5_metadata(hdf5_file)
             except Exception as e:
                 print(f"Error: {e}")
         
         elif choice == '4':
-            # Split and load dataset
             try:
                 print("\nDataset Split Ratios:")
                 train_ratio = float(input("  Training ratio [0.7]: ").strip() or "0.7")
@@ -693,7 +629,6 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                     logger, hdf5_file, train_ratio, val_ratio, test_ratio, save_to_file=True
                 )
                 
-                # Update status with split info
                 if train_path:
                     try:
                         with h5py.File(train_path, 'r') as f:
@@ -711,7 +646,6 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                 traceback.print_exc()
         
         elif choice == '3':
-            # Condition dataset
             try:
                 print(f"\n{'='*70}")
                 print("CONDITION DATASET")
@@ -726,13 +660,11 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                     time
                 )
                 
-                # Save conditioned dataset
                 base_name = os.path.basename(hdf5_file).replace('.h5', '')
                 base_dir = os.path.dirname(hdf5_file)
                 conditioned_file = os.path.join(base_dir, f"{base_name}_conditioned.h5")
                 
                 print(f"\nSaving conditioned dataset to: {conditioned_file}")
-                # Count actual target present/absent from loaded data (may differ if corrupted sims were skipped)
                 actual_target_present = int(np.sum(labels == 1))
                 actual_target_absent = int(np.sum(labels == 0))
                 logger.initialize_hdf5(conditioned_file, actual_target_present, 
@@ -800,7 +732,6 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                 classifier.build_model(num_samples)
                 classifier.train_model(X_train, y_train, X_val, y_val, epochs=epochs, batch_size=batch_size)
                 
-                # Update status
                 status.set_model(None, classifier.model.count_params(), trained=True)
                     
             except Exception as e:
@@ -861,7 +792,6 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                 traceback.print_exc()
 
         elif choice == '8':
-            # Quantize model
             try:
                 if classifier.model is None:
                     print("\nNo model loaded. Train a model first (option 5) or load one (option 11).")
@@ -871,7 +801,6 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                 print("QUANTIZE MODEL")
                 print(f"{'='*70}")
                 
-                # Check if test data is available for representative dataset
                 test_path = logger.get_split_path(hdf5_file, 'test')
                 representative_data = None
                 if test_path:
@@ -882,7 +811,6 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                         representative_data = decay_curves.reshape(decay_curves.shape[0], decay_curves.shape[1], 1)
                         print(f"Using {len(representative_data)} samples from test set")
                 
-                # Generate unique name based on model properties
                 input_len = classifier.model.input_shape[1]
                 num_params = classifier.model.count_params()
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -892,7 +820,6 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                     output_name += '.tflite'
                 output_path = os.path.join(os.path.dirname(hdf5_file), output_name)
                 
-                # Quantize the model
                 quantized_model = classifier.quantize_model(representative_data=representative_data, output_path=output_path)
                 
                 if quantized_model is not None:
@@ -907,7 +834,6 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                 traceback.print_exc()
 
         elif choice == '9':
-            # Classification plots
             try:
                 if classifier.model is None and not classifier.has_quantized_model():
                     print("\nNo model loaded. Train a model first (option 5) or load one (option 11).")
@@ -923,7 +849,6 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                 X_test = decay_curves.reshape(decay_curves.shape[0], decay_curves.shape[1], 1)
                 y_test = labels
                 
-                # Classification plots submenu
                 while True:
                     print(f"\n{'='*70}")
                     print("Classification Plots")
@@ -962,12 +887,10 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                     elif plot_choice == '5':
                         classifier.plot_prediction_distribution(X_test, y_test)
                     elif plot_choice == '6':
-                        # Multi-SNR ROC with in-memory noise addition
                         print("\n" + "-"*50)
                         print("Multi-SNR ROC Analysis")
                         print("-"*50)
                         
-                        # Ask for SNR values
                         default_snrs = "0, 5, 10, 15, 20"
                         snr_input = input(f"Enter SNR values in dB (comma-separated) [{default_snrs}]: ").strip()
                         snr_input = snr_input if snr_input else default_snrs
@@ -977,7 +900,6 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                             print("Invalid SNR values. Using defaults.")
                             snr_values = [0, 5, 10, 15, 20]
                         
-                        # Ask for late time
                         default_late_time = 1e-4
                         late_time_input = input(f"Enter late time for noise calculation [{default_late_time}]: ").strip()
                         try:
@@ -985,7 +907,6 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                         except ValueError:
                             late_time = default_late_time
                         
-                        # Ask whether to use quantized model
                         use_quantized = False
                         if classifier.has_quantized_model():
                             use_q = input("Use quantized model for inference? (y/n) [n]: ").strip().lower()
@@ -1004,12 +925,10 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                             use_quantized=use_quantized
                         )
                     elif plot_choice == '7':
-                        # Multi-SNR Confusion Matrix and Prediction Distribution
                         print("\n" + "-"*50)
                         print("Multi-SNR Confusion Matrix and Prediction Distribution")
                         print("-"*50)
                         
-                        # Ask for SNR values
                         default_snrs = "0, 5, 10, 15, 20"
                         snr_input = input(f"Enter SNR values in dB (comma-separated) [{default_snrs}]: ").strip()
                         snr_input = snr_input if snr_input else default_snrs
@@ -1019,7 +938,6 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                             print("Invalid SNR values. Using defaults.")
                             snr_values = [0, 5, 10, 15, 20]
                         
-                        # Ask for late time
                         default_late_time = 1e-4
                         late_time_input = input(f"Enter late time for noise calculation [{default_late_time}]: ").strip()
                         try:
@@ -1027,7 +945,6 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                         except ValueError:
                             late_time = default_late_time
                         
-                        # Ask whether to use quantized model
                         use_quantized = False
                         if classifier.has_quantized_model():
                             use_q = input("Use quantized model for inference? (y/n) [n]: ").strip().lower()
@@ -1046,12 +963,10 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                             use_quantized=use_quantized
                         )
                     elif plot_choice == '8':
-                        # Multi-SNR Accuracy Analysis
                         print("\n" + "-"*50)
                         print("Multi-SNR Accuracy Analysis")
                         print("-"*50)
                         
-                        # Ask for SNR values
                         default_snrs = "0, 5, 10, 15, 20"
                         snr_input = input(f"Enter SNR values in dB (comma-separated) [{default_snrs}]: ").strip()
                         snr_input = snr_input if snr_input else default_snrs
@@ -1061,7 +976,6 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                             print("Invalid SNR values. Using defaults.")
                             snr_values = [0, 5, 10, 15, 20]
                         
-                        # Ask for late time
                         default_late_time = 1e-4
                         late_time_input = input(f"Enter late time for noise calculation [{default_late_time}]: ").strip()
                         try:
@@ -1069,7 +983,6 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                         except ValueError:
                             late_time = default_late_time
                         
-                        # Ask whether to use quantized model
                         use_quantized = False
                         if classifier.has_quantized_model():
                             use_q = input("Use quantized model for inference? (y/n) [n]: ").strip().lower()
@@ -1088,12 +1001,10 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                             use_quantized=use_quantized
                         )
                     elif plot_choice == '9':
-                        # Multi-SNR AUC Analysis
                         print("\n" + "-"*50)
                         print("Multi-SNR AUC Analysis")
                         print("-"*50)
                         
-                        # Ask for SNR values
                         default_snrs = "0, 5, 10, 15, 20"
                         snr_input = input(f"Enter SNR values in dB (comma-separated) [{default_snrs}]: ").strip()
                         snr_input = snr_input if snr_input else default_snrs
@@ -1103,7 +1014,6 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                             print("Invalid SNR values. Using defaults.")
                             snr_values = [0, 5, 10, 15, 20]
                         
-                        # Ask for late time
                         default_late_time = 1e-4
                         late_time_input = input(f"Enter late time for noise calculation [{default_late_time}]: ").strip()
                         try:
@@ -1111,7 +1021,6 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                         except ValueError:
                             late_time = default_late_time
                         
-                        # Ask whether to use quantized model
                         use_quantized = False
                         if classifier.has_quantized_model():
                             use_q = input("Use quantized model for inference? (y/n) [n]: ").strip().lower()
@@ -1147,14 +1056,11 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                 traceback.print_exc()
         
         elif choice == '10':
-            # Model analysis submenu
             try:
-                # Load test data if available
                 X_test = None
                 y_test = None
                 time = None
                 
-                # Debug: show what file we're looking for
                 print(f"\nLooking for test data based on: {hdf5_file}")
                 test_path = logger.get_split_path(hdf5_file, 'test')
                 print(f"Test path returned: {test_path}")
@@ -1212,13 +1118,12 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                         
                         flops_result = classifier.calculate_flops()
                         
-                        # Ask if user wants to save results
                         save_flops = input("\nSave FLOP analysis to file? (y/n) [n]: ").strip().lower()
                         if save_flops == 'y':
                             flops_file = os.path.join(os.path.dirname(hdf5_file), "flops_analysis.txt")
                             with open(flops_file, 'w') as f:
                                 f.write("="*70 + "\n")
-                                f.write("FLOP Analysis for PiClassifier\n")
+                                f.write("FLOP Analysis for PiemsolClassifier\n")
                                 f.write("="*70 + "\n\n")
                                 f.write(f"Total FLOPs per inference: {flops_result['total_flops']:,}\n")
                                 f.write(f"Total MFLOPs: {flops_result['mflops']:.3f}\n")
@@ -1272,42 +1177,33 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                         print("\n✓ Model built successfully!")
                     
                     elif analysis_choice == '6':
-                        # Model Size Analysis
                         if classifier.model is None and not classifier.has_quantized_model():
                             print("\nNo model loaded. Load a Keras or quantized model first.")
                             continue
                         classifier.get_model_size()
                     
                     elif analysis_choice == '7':
-                        # Profile Inference Time
                         if classifier.model is None and not classifier.has_quantized_model():
                             print("\nNo model loaded. Load a Keras or quantized model first.")
                             continue
                         
                         try:
-                            num_runs = int(input("Number of inference runs [100]: ").strip() or "100")
+                            batch_size = int(input("Batch size (samples per batch) [1000]: ").strip() or "1000")
                         except ValueError:
-                            num_runs = 100
+                            batch_size = 1000
                         
                         try:
-                            warmup = int(input("Number of warmup runs [10]: ").strip() or "10")
+                            num_batches = int(input("Number of batches [10]: ").strip() or "10")
                         except ValueError:
-                            warmup = 10
+                            num_batches = 10
                         
-                        # Use test data if available
-                        sample = None
-                        if X_test is not None and len(X_test) > 0:
-                            sample = X_test[0:1]
-                        
-                        classifier.profile_inference(X_sample=sample, num_runs=num_runs, warmup_runs=warmup)
+                        classifier.profile_inference(batch_size=batch_size, num_batches=num_batches)
                     
                     elif analysis_choice == '8':
-                        # Compare Model Accuracy
                         if classifier.model is None and not classifier.has_quantized_model():
                             print("\nNo model loaded. Load a Keras or quantized model first.")
                             continue
                         
-                        # Need test data
                         if X_test is None:
                             print("\nNo test data available. Split the dataset first (option 4).")
                             continue
@@ -1315,7 +1211,6 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                         classifier.compare_model_accuracy(X_test, y_test)
                     
                     elif analysis_choice == '9':
-                        # Full Comprehensive Analysis
                         if classifier.model is None and not classifier.has_quantized_model():
                             print("\nNo model loaded. Load a Keras or quantized model first.")
                             continue
@@ -1331,12 +1226,10 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                             num_inference_runs=num_runs
                         )
                         
-                        # Ask to save results
                         save_results = input("\nSave analysis to file? (y/n) [n]: ").strip().lower()
                         if save_results == 'y':
                             import json
                             
-                            # Convert numpy arrays to lists for JSON serialization
                             def convert_to_serializable(obj):
                                 if isinstance(obj, np.ndarray):
                                     return obj.tolist()
@@ -1351,7 +1244,6 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                                 return obj
                             
                             results_serializable = convert_to_serializable(results)
-                            # Remove large arrays from serialization
                             if 'inference' in results_serializable:
                                 for model_type in ['keras', 'quantized']:
                                     if model_type in results_serializable['inference']:
@@ -1367,7 +1259,6 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                             print(f"✓ Saved to: {analysis_file}")
                     
                     elif analysis_choice == '10':
-                        # Multi-SNR Accuracy Comparison
                         if classifier.model is None or not classifier.has_quantized_model():
                             print("\nBoth Keras and quantized models required. Load both models first.")
                             continue
@@ -1376,7 +1267,6 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                             print("\nNo test data available. Split the dataset first (option 4).")
                             continue
                         
-                        # Get SNR values
                         default_snrs = "0, 5, 10, 15, 20"
                         snr_input = input(f"Enter SNR values in dB (comma-separated) [{default_snrs}]: ").strip()
                         snr_input = snr_input if snr_input else default_snrs
@@ -1386,7 +1276,6 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                             print("Invalid SNR values. Using defaults.")
                             snr_values = [0, 5, 10, 15, 20]
                         
-                        # Ask for late time
                         default_late_time = 1e-4
                         late_time_input = input(f"Enter late time for noise calculation [{default_late_time}]: ").strip()
                         try:
@@ -1403,7 +1292,6 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                         )
                     
                     elif analysis_choice == '11':
-                        # Multi-SNR AUC Comparison
                         if classifier.model is None or not classifier.has_quantized_model():
                             print("\nBoth Keras and quantized models required. Load both models first.")
                             continue
@@ -1412,7 +1300,6 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                             print("\nNo test data available. Split the dataset first (option 4).")
                             continue
                         
-                        # Get SNR values
                         default_snrs = "0, 5, 10, 15, 20"
                         snr_input = input(f"Enter SNR values in dB (comma-separated) [{default_snrs}]: ").strip()
                         snr_input = snr_input if snr_input else default_snrs
@@ -1422,7 +1309,6 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                             print("Invalid SNR values. Using defaults.")
                             snr_values = [0, 5, 10, 15, 20]
                         
-                        # Ask for late time
                         default_late_time = 1e-4
                         late_time_input = input(f"Enter late time for noise calculation [{default_late_time}]: ").strip()
                         try:
@@ -1449,7 +1335,6 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                 traceback.print_exc()
         
         elif choice == '11':
-            # Save/Load model submenu
             try:
                 while True:
                     print(f"\n{'='*70}")
@@ -1481,7 +1366,6 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                             print("\nNo model to save. Train or build a model first.")
                             continue
                         
-                        # Generate unique name based on model properties
                         input_len = classifier.model.input_shape[1]
                         num_params = classifier.model.count_params()
                         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -1495,7 +1379,6 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                         classifier.save_model(model_path)
                     
                     elif model_choice == '2':
-                        # Find .keras files
                         model_dir = os.path.dirname(hdf5_file)
                         keras_files = [f for f in os.listdir(model_dir) if f.endswith('.keras')]
                         
@@ -1532,7 +1415,6 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                             print(f"File not found: {model_path}")
                     
                     elif model_choice == '3':
-                        # Find .tflite files
                         model_dir = os.path.dirname(hdf5_file)
                         tflite_files = [f for f in os.listdir(model_dir) if f.endswith('.tflite')]
                         
@@ -1605,19 +1487,18 @@ def dataset_operations_menu(hdf5_file, cfg, simulator, logger, plotter, classifi
                 traceback.print_exc()
         
         elif choice == 'b':
-            # Back to main menu
             break
         
         else:
             print("Invalid option selected.")
 
 if __name__ == "__main__":
-    cfg = PiConfig('config.json')
-    simulator = PiSimulator(cfg)
-    logger = PiLogger()
-    plotter = PiPlotter(cfg, simulator)
-    conditioner = PiConditioner(cfg)
-    classifier = PiClassifier(conditioner)
+    cfg = PiemsolConfig('config.json')
+    simulator = PiemsolSimulator(cfg)
+    logger = PiemsolLogger()
+    plotter = PiemsolPlotter(cfg, simulator)
+    conditioner = PiemsolConditioner(cfg)
+    classifier = PiemsolClassifier(conditioner)
     status = SystemStatus()
 
     num_target_present = 2000
@@ -1639,7 +1520,6 @@ if __name__ == "__main__":
         choice = input("\nSelect option: ").strip().lower()
         
         if choice == '1':
-            # Generate new dataset with unique distances
             print("\n" + "="*70)
             print("Generate New Dataset - Unique Target Distances")
             print("="*70)
@@ -1678,11 +1558,9 @@ if __name__ == "__main__":
                 probability_of_target_in_soil=0.5,
             )
             
-            # Go to dataset operations menu
             dataset_operations_menu(hdf5_path, cfg, simulator, logger, plotter, classifier, conditioner, status)
         
         elif choice == '2':
-            # Generate new dataset with equal distance
             print("\n" + "="*70)
             print("Generate New Dataset - Equal Target Distance")
             print("="*70)
@@ -1709,11 +1587,9 @@ if __name__ == "__main__":
                 num_different_targets=1,
             )
             
-            # Go to dataset operations menu
             dataset_operations_menu(hdf5_path, cfg, simulator, logger, plotter, classifier, conditioner, status)
         
         elif choice == '3':
-            # Generate new dataset with specific placements
             print("\n" + "="*70)
             print("Generate New Dataset - Specific Placements")
             print("="*70)
@@ -1754,11 +1630,9 @@ if __name__ == "__main__":
                 num_different_targets=1,
             )
             
-            # Go to dataset operations menu
             dataset_operations_menu(hdf5_path, cfg, simulator, logger, plotter, classifier, conditioner, status)
         
         elif choice == '4':
-            # Load existing dataset
             hdf5_file = logger.select_hdf5_file()
             
             if hdf5_file is None:
