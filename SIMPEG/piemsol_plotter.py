@@ -240,41 +240,44 @@ class PiemsolPlotter(BasePlotter):
         
         print(f"\nPlotting {len(selected_indices)} simulation(s)...")
         
-        fig = plt.figure(figsize=(24, 11))
-        gs = fig.add_gridspec(1, 2, width_ratios=[2, 3], wspace=0.01)
-        ax_model = fig.add_subplot(gs[0, 0])
-        ax_decay = fig.add_subplot(gs[0, 1])
+        fig_model = plt.figure()
+        ax_model = fig_model.add_subplot(111)
         
         r = self.mesh.cell_centers[self.ind_active, 0]
         z = self.mesh.cell_centers[self.ind_active, 2]
         
-        ax_model.set_aspect('equal')
-        
-        ax_model.axhline(0, color='darkgreen', linewidth=2, linestyle='--', alpha=0.7, label='Ground Level')
+        ax_model.axhline(0, color='darkgreen', linewidth=2, linestyle='--', alpha=0.7, label='Ground level')
         
         colors = plt.cm.tab10(np.linspace(0, 1, len(selected_indices)))
         
         for plot_idx, sim_idx in enumerate(selected_indices):
             meta = self.simulations_metadata[sim_idx]
             color = colors[plot_idx]
+            meta['label'] = meta['label'].replace(' (ABOVE ground)', '').replace(' (BELOW ground)', '')
             
             if meta['target_z'] is not None:
+                target_label = f"Target at {meta['target_z']:.3f}m"
                 ax_model.scatter([self.cfg.target_radius/2], [meta['target_z']], 
-                        c=[color], s=150, alpha=0.9,
-                        marker='X', edgecolors='black', linewidths=2.0)
-            
+                        c=[color], s=250, alpha=0.9,
+                        marker='X', edgecolors='black', linewidths=2.0,
+                        label=target_label)
+            coil_label = f"Coil at {meta['loop_z']:.3f}m"
             loop_radius = float(self.cfg.tx_radius)
             ax_model.plot([0, loop_radius], [meta['loop_z'], meta['loop_z']],
                  color=color, linewidth=4, marker='o', markersize=10,
-                 markerfacecolor=color, markeredgecolor='black', markeredgewidth=1.5,
-                 label=f"{meta['label']}")
+                 label=coil_label, markerfacecolor=color, markeredgecolor='black',
+                 markeredgewidth=1.5)
         
-        ax_model.set_xlabel('Radial Distance [m]', fontsize=20)
+        ax_model.set_xlabel('Radial distance [m]', fontsize=20)
         ax_model.set_ylabel('Depth [m]', fontsize=20)
         ax_model.tick_params(labelsize=20)
-        
         ax_model.grid(True, alpha=0.3)
-        ax_model.set_xlim([0, self.cfg.tx_radius + 0.1])
+        ax_model.legend(fontsize=16, loc='best', framealpha=0.9)
+        ax_model.set_ylim(-0.45,0.7)
+        fig_model.tight_layout()
+
+        fig_decay = plt.figure()
+        ax_decay = fig_decay.add_subplot(111)
         
         for plot_idx, sim_idx in enumerate(selected_indices):
             meta = self.simulations_metadata[sim_idx]
@@ -289,24 +292,8 @@ class PiemsolPlotter(BasePlotter):
         ax_decay.set_xlabel('Time [μs]', fontsize=20)
         ax_decay.set_ylabel(r'$\frac{\partial B_{z}}{\partial t}$ [T/s]', fontsize=20)
         ax_decay.tick_params(labelsize=20)
-        
         ax_decay.grid(True, alpha=0.3, which='both')
-        
-        handles, labels = ax_model.get_legend_handles_labels()
-        
-        n_items = len(labels)
-        if n_items > 15:
-            ncol = 6
-        elif n_items > 10:
-            ncol = 5
-        elif n_items > 6:
-            ncol = 4
-        else:
-            ncol = 3
-        
-        fig.legend(handles, labels, fontsize=20, loc ='lower center',
-                  ncol=ncol, framealpha=0.9)
-        
+        ax_decay.legend(fontsize=16, loc='best', framealpha=0.9)    
         plt.show()
     
     def plot_conductivity_models(self):
@@ -382,20 +369,20 @@ class PiemsolPlotter(BasePlotter):
                                   np.log10(self.cfg.aluminum_conductivity)))
         
         cbar = plt.colorbar(im[0], ax=ax, pad=0.02)
-        cbar.set_label(r'$\log_{10}(\sigma)$ [S/m]', fontsize=20)
+        cbar.set_label(f'Logarithmic conductivity', fontsize=20)
         cbar.ax.tick_params(labelsize=18)
         
-        ax.axhline(y=0, color='brown', linestyle='-', linewidth=3, alpha=0.8, label='Ground surface')
+        ax.axhline(y=0, color='green', linestyle='--', linewidth=3, alpha=0.8, label='Ground level')
         
         loop_radius = float(self.cfg.tx_radius)
         ax.plot([0, loop_radius], [loop_z, loop_z], 
                color='blue', linewidth=2.5, marker='o', markersize=8,
                label=f'TX/RX coil (z={loop_z:.3f}m)')
         
-        ax.set_xlabel('Radial Distance [m]', fontsize=20)
+        ax.set_xlabel('Radial distance [m]', fontsize=20)
         ax.set_ylabel('Elevation [m]', fontsize=20)
         ax.tick_params(labelsize=20)
-        ax.legend(fontsize=20)
+        ax.legend(fontsize=18)
         ax.grid(True, alpha=0.3)
         ax.set_xlim([0, 0.5])
         ax.set_ylim([-0.5, 0.7])

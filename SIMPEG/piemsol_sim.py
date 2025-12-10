@@ -408,10 +408,10 @@ def run_equal_distance_to_target_simulations(simulator, logger, loop_z_range, eq
         
         metadata['target_present'] = target_present
         if target_present:
-            metadata['label'] = f"Coil at {loop_z_val:.2f}, object at {target_z_val:.2f} (ABOVE ground)"
+            metadata['label'] = f"Coil at {loop_z_val:.2f}, object at {target_z_val:.2f}"
             target_present_count += 1
         else:
-            metadata['label'] = f"Coil at {loop_z_val:.2f}, object at {target_z_val:.2f} (BELOW ground)"
+            metadata['label'] = f"Coil at {loop_z_val:.2f}, object at {target_z_val:.2f}"
             target_absent_count += 1
         
         logger.store_to_hdf5(output_file, sim_index, time, decay, metadata['label'], metadata, model_params)
